@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>政策抓取入库运维工具</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main>
+  <header><div><h1>政策抓取入库</h1><p>开发运维控制台 · 抓取入库分离</p></div><span id="health" class="badge">检查中</span></header>
+
+  <div class="tabs">
+    <button class="tab active" id="tabTasksBtn">任务</button>
+    <button class="tab" id="tabArticlesBtn">已抓取数据<span id="pendingBadge" class="pending"></span></button>
+  </div>
+
+  <section class="card" id="panelKmsAuth">
+    <div class="row"><h2>KMS 鉴权配置</h2><span id="kmsAuthStatus" class="muted">检查中…</span></div>
+    <p class="hint">仅用于本机当前运行服务，保存后立即生效；不会写入数据库或回显，服务重启后需重新配置。</p>
+    <div class="auth-grid">
+      <label>access_token<input id="kmsAccessToken" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴 144 接口的 access_token"></label>
+      <label>Authorization<input id="kmsAuthorization" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴 144 接口的 Authorization"></label>
+    </div>
+    <div class="actions"><button id="saveKmsAuth" class="secondary">保存鉴权配置</button><span class="hint">两个字段可同时填写；留空后保存可清除对应配置。</span></div>
+  </section>
+
+  <!-- ==================== 任务 Tab ==================== -->
+  <section class="card" id="panelTasks">
+    <h2>任务</h2><div id="tasks" class="tasks"></div>
+    <div class="actions">
+      <label><input id="dryRun" type="checkbox" checked> 预检（不写数据库、不调用 KMS）</label>
+      <label class="mini"><input id="refreshExisting" type="checkbox"> 重新抓取已存在政策（比对原文）</label>
+      <label class="mini"><input id="autoSync" type="checkbox"> 自动同步知识库（抓取完成后自动入库）</label>
+      <button id="start">启动抓取</button><button id="stop" class="secondary" disabled>停止</button>
+    </div>
+    <p class="hint">勾选“重新抓取”后，会获取最新原文并与本地快照比对；仅变化且已同步的政策进入“待更新”，由人工确认后覆盖 KMS。</p>
+  </section>
+
+  <section class="card" id="panelCurrent">
+    <div class="row"><h2>当前批次</h2><code id="runId">-</code></div>
+    <div class="progress"><div id="bar"></div></div>
+    <div class="stats"><span>总数 <b id="total">0</b></span><span>成功 <b id="succeeded">0</b></span><span>跳过 <b id="skipped">0</b></span><span>失败 <b id="failed">0</b></span></div>
+    <pre id="logs">等待启动…</pre>
+  </section>
+
+  <section class="card" id="panelRuns"><h2>最近批次</h2><div class="table-wrap"><table><thead><tr><th>批次</th><th>触发</th><th>模式</th><th>状态</th><th>成功/跳过/失败</th><th>开始时间</th><th>操作</th></tr></thead><tbody id="runs"></tbody></table></div></section>
+
+  <!-- ==================== 已抓取数据 Tab ==================== -->
+  <section class="card" id="panelArticles" style="display:none">
+    <h2>已抓取数据 <span id="articleStats" class="muted"></span></h2>
+
+    <div class="filters">
+      <span class="group" id="statusFilter">
+        <span class="opt on" data-status="">全部</span><span class="opt" data-status="pending">待入库</span><span class="opt" data-status="success">已同步</span><span class="opt" data-status="failed">同步失败</span>
+      </span>
+      <span class="group" id="updateFilter" title="历史正文补齐状态">
+        <span class="opt on" data-update="">全部正文</span><span class="opt" data-update="pending">待更新</span><span class="opt" data-update="failed">更新失败</span><span class="opt" data-update="unmatched">无法匹配</span>
+      </span>
+      <span class="group" id="sourceFilter">
+        <span class="opt on" data-source="">全部来源</span><span class="opt" data-source="suishenban">随申办</span><span class="opt" data-source="qifuyun">企服云</span>
+      </span>
+      <input id="keyword" type="search" placeholder="搜索标题关键字…">
+      <button class="secondary" id="refreshArticles">刷新</button>
+    </div>
+
+    <div class="actions">
+      <button id="pushSelected" disabled>保存到知识库 (0)</button>
+      <label class="mini"><input id="pushDryRun" type="checkbox"> 预检（不推送）</label>
+      <button id="updateSelected" class="secondary" disabled>覆盖更新正文 (0)</button>
+      <label class="mini"><input id="updateDryRun" type="checkbox" checked> 更新预检（不调用 KMS）</label>
+      <button class="secondary" id="stopPush" disabled>停止</button>
+    </div>
+
+    <div class="push-panel" id="pushPanel" style="display:none">
+      <div class="row"><h2 style="margin:0">入库进度</h2><code id="pushRunId">-</code></div>
+      <div class="progress"><div id="pushBar"></div></div>
+      <div class="stats"><span>总数 <b id="pushTotal">0</b></span><span>成功 <b id="pushSucceeded">0</b></span><span>失败 <b id="pushFailed">0</b></span></div>
+      <pre id="pushLogs">等待启动…</pre>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th style="width:34px"><input type="checkbox" id="checkAll" title="全选当前页"></th>
+          <th>标题</th><th>来源</th><th>发文日期</th><th>抓取时间</th><th>申报起止</th><th>同步状态</th><th>正文更新</th><th>同步日期</th>
+        </tr></thead>
+        <tbody id="articlesBody"></tbody>
+      </table>
+    </div>
+    <div class="pager">
+      <span id="pageInfo">共 0 条</span><button class="secondary" id="prevPage" disabled>上一页</button><span id="pageNo">1 / 1</span><button class="secondary" id="nextPage" disabled>下一页</button>
+    </div>
+  </section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

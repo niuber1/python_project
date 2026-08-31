@@ -1,0 +1,18 @@
+{
+  "id": "e3ce301b3ab95849b0ab8fc69e7b5e16",
+  "bt": "某申报通知（脱敏示例）",
+  "url": "https://shpolicy.ssme.sh.gov.cn/knowledge/#/policyDetail?policyId=example",
+  "pubDate": "2026-08-01",
+  "wh": "沪示例〔2026〕1号",
+  "content": "<section><h2>政策信息</h2><dl><dt><strong>项目名称</strong></dt><dd>示例项目</dd></dl></section><section><h2>政策正文</h2><p>脱敏正文</p></section>",
+  "source": "上海市企业服务云",
+  "baseId": "395cbf7152564184ad7c701beaf80cc5",
+  "metadata": {
+    "项目名称": "示例项目",
+    "政策层级": "市级",
+    "发文部门": "示例部门",
+    "申报开始时间": "2026-08-01",
+    "申报结束时间": "2026-08-31",
+    "文档来源": "上海市企业服务云"
+  }
+}
