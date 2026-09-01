@@ -68,9 +68,10 @@ def test_update_content_posts_to_kms_document_update_endpoint():
     assert "knowledgeBaseId" not in seen["json"]
 
 
-def test_update_content_sends_configured_kms_access_token_only():
+def test_update_content_sends_configured_authorization_token_and_cookie():
     seen = {}
     def handler(request):
+        seen["authorization_token"] = request.headers.get("authorization-token")
         seen["access_token"] = request.headers.get("access_token")
         seen["authorization"] = request.headers.get("authorization")
         seen["cookie"] = request.headers.get("cookie")
@@ -78,21 +79,21 @@ def test_update_content_sends_configured_kms_access_token_only():
     configured = Settings(_env_file=None, kms_base_url="https://kms.test", kms_authorization_token="token-value", kms_cookie="session=value")
     result = KmsClient(configured, httpx.Client(transport=httpx.MockTransport(handler)), lambda _: None).update_content("a" * 32, "<p>正文</p>")
     assert result.success
-    assert seen == {"access_token": "token-value", "authorization": None, "cookie": None}
+    assert seen == {"authorization_token": "token-value", "access_token": "token-value", "authorization": "token-value", "cookie": "session=value"}
 
 
 def test_auth_uses_read_only_kms_endpoint_and_does_not_persist_credentials():
     seen = {}
     def handler(request):
         seen["path"] = request.url.path
-        seen["access_token"] = request.headers.get("access_token")
+        seen["authorization"] = request.headers.get("authorization")
         return httpx.Response(200, json=[])
-    result = KmsClient(settings(), httpx.Client(transport=httpx.MockTransport(handler)), lambda _: None).test_auth("token-value")
+    result = KmsClient(settings(), httpx.Client(transport=httpx.MockTransport(handler)), lambda _: None).test_auth("token-value", "cookie=value")
     assert result.success and result.code == "AUTH_OK"
-    assert seen == {"path": "/kms/openapi/knowledge/base/queryPersonBase", "access_token": "token-value"}
+    assert seen == {"path": "/kms/openapi/knowledge/base/queryPersonBase", "authorization": "token-value"}
 
 
 def test_auth_reports_kms_auth_error():
     response = httpx.Response(500, json={"success": False, "state": 21004, "message": "token不能为空"})
-    result = KmsClient(settings(), httpx.Client(transport=httpx.MockTransport(lambda _: response)), lambda _: None).test_auth("bad")
+    result = KmsClient(settings(), httpx.Client(transport=httpx.MockTransport(lambda _: response)), lambda _: None).test_auth("bad", "")
     assert not result.success and result.code == "HTTP_500"

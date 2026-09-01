@@ -58,26 +58,29 @@ class KmsClient:
         return f"KMS HTTP {response.status_code}" + (f": {detail[:500]}" if detail else "")
 
     @staticmethod
-    def auth_headers(access_token: str) -> dict[str, str]:
+    def auth_headers(authorization_token: str, cookie: str) -> dict[str, str]:
         headers = {"Content-Type": "application/json; charset=utf-8"}
-        token = access_token.strip()
+        token = authorization_token.strip()
         if token:
-            # KMS OpenAPI 的鉴权拦截器读取 access_token；服务端会将其作为
-            # DreamAI Bearer token 校验。政策门户的 Authorization-Token/Cookie
-            # 不是 KMS OpenAPI 凭据，不能混用。
+            # KMS 网页请求使用 Authorization-Token；OpenAPI 网关兼容读取
+            # access_token/Authorization，因此三者都传递同一令牌。
+            headers["Authorization-Token"] = token
             headers["access_token"] = token
+            headers["Authorization"] = token
+        if cookie.strip():
+            headers["Cookie"] = cookie.strip()
         return headers
 
     def _add_auth_headers(self, headers: dict[str, str]) -> None:
-        headers.update(self.auth_headers(self.settings.kms_authorization_token))
+        headers.update(self.auth_headers(self.settings.kms_authorization_token, self.settings.kms_cookie))
         # 兼容旧配置；新页面不再提供此字段。
         if self.settings.kms_authorization:
             headers["Authorization"] = self.settings.kms_authorization
 
-    def test_auth(self, access_token: str) -> KmsResult:
+    def test_auth(self, authorization_token: str, cookie: str) -> KmsResult:
         """调用 KMS 只读接口验证鉴权，不写入任何知识库数据。"""
         try:
-            response = self.client.post(self.settings.kms_auth_check_url, headers=self.auth_headers(access_token))
+            response = self.client.post(self.settings.kms_auth_check_url, headers=self.auth_headers(authorization_token, cookie))
         except (httpx.TimeoutException, httpx.NetworkError) as exc:
             return KmsResult(success=False, code="NETWORK_ERROR", message=f"KMS 网络异常: {type(exc).__name__}")
         if response.status_code >= 400:
