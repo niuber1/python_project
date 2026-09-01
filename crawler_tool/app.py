@@ -94,19 +94,21 @@ def get_tasks():
 def get_kms_auth_status():
     """只返回是否已配置，绝不向页面回传鉴权原文。"""
     return {
-        "has_access_token": bool(settings.kms_access_token),
-        "has_authorization": bool(settings.kms_authorization),
+        "has_authorization_token": bool(settings.kms_authorization_token),
+        "has_cookie": bool(settings.kms_cookie),
     }
 
 
 @app.put("/api/kms-auth")
 def set_kms_auth(body: KmsAuthConfigRequest):
     """更新当前进程的 KMS 鉴权；重启后恢复 .env / 环境变量的原始配置。"""
-    settings.kms_access_token = body.access_token.strip()
-    settings.kms_authorization = body.authorization.strip()
+    settings.kms_authorization_token = body.authorization_token.strip()
+    settings.kms_cookie = body.cookie.strip()
+    # 防止先前页面配置的旧字段继续随请求发送。
+    settings.kms_authorization = ""
     return {
-        "has_access_token": bool(settings.kms_access_token),
-        "has_authorization": bool(settings.kms_authorization),
+        "has_authorization_token": bool(settings.kms_authorization_token),
+        "has_cookie": bool(settings.kms_cookie),
         "message": "KMS 鉴权已保存到当前服务内存，重启服务后需重新配置。",
     }
 

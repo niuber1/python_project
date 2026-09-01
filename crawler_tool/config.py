@@ -31,7 +31,8 @@ class Settings(BaseSettings):
     kms_base_url: str = "http://10.1.3.144:20002"
     kms_path: str = "/kms/api/etl/dg/crawlerToBase"
     kms_update_path: str = "/kms/openapi/knowledge/document/update"
-    kms_access_token: str = ""
+    # KMS 网页实际请求使用 Authorization-Token；保留 kms_authorization 仅兼容旧 .env 配置。
+    kms_authorization_token: str = ""
     kms_authorization: str = ""
     kms_cookie: str = ""
     bind_host: str = "127.0.0.1"

@@ -68,13 +68,13 @@ def test_update_content_posts_to_kms_document_update_endpoint():
     assert "knowledgeBaseId" not in seen["json"]
 
 
-def test_update_content_sends_configured_access_token_and_authorization():
+def test_update_content_sends_configured_authorization_token_and_cookie():
     seen = {}
     def handler(request):
-        seen["access_token"] = request.headers.get("access_token")
-        seen["authorization"] = request.headers.get("authorization")
+        seen["authorization_token"] = request.headers.get("authorization-token")
+        seen["cookie"] = request.headers.get("cookie")
         return httpx.Response(200, json={"data": True})
-    configured = Settings(_env_file=None, kms_base_url="https://kms.test", kms_access_token="access-value", kms_authorization="authorization-value")
+    configured = Settings(_env_file=None, kms_base_url="https://kms.test", kms_authorization_token="token-value", kms_cookie="session=value")
     result = KmsClient(configured, httpx.Client(transport=httpx.MockTransport(handler)), lambda _: None).update_content("a" * 32, "<p>正文</p>")
     assert result.success
-    assert seen == {"access_token": "access-value", "authorization": "authorization-value"}
+    assert seen == {"authorization_token": "token-value", "cookie": "session=value"}

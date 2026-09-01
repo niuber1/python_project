@@ -58,8 +58,9 @@ class KmsClient:
         return f"KMS HTTP {response.status_code}" + (f": {detail[:500]}" if detail else "")
 
     def _add_auth_headers(self, headers: dict[str, str]) -> None:
-        if self.settings.kms_access_token:
-            headers["access_token"] = self.settings.kms_access_token
+        if self.settings.kms_authorization_token:
+            headers["Authorization-Token"] = self.settings.kms_authorization_token
+        # 兼容旧配置；新页面不再提供此字段。
         if self.settings.kms_authorization:
             headers["Authorization"] = self.settings.kms_authorization
         if self.settings.kms_cookie:
