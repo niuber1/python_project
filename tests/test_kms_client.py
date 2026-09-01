@@ -80,3 +80,20 @@ def test_update_content_sends_configured_authorization_token_and_cookie():
     result = KmsClient(configured, httpx.Client(transport=httpx.MockTransport(handler)), lambda _: None).update_content("a" * 32, "<p>正文</p>")
     assert result.success
     assert seen == {"authorization_token": "token-value", "access_token": "token-value", "authorization": "token-value", "cookie": "session=value"}
+
+
+def test_auth_uses_read_only_kms_endpoint_and_does_not_persist_credentials():
+    seen = {}
+    def handler(request):
+        seen["path"] = request.url.path
+        seen["authorization"] = request.headers.get("authorization")
+        return httpx.Response(200, json=[])
+    result = KmsClient(settings(), httpx.Client(transport=httpx.MockTransport(handler)), lambda _: None).test_auth("token-value", "cookie=value")
+    assert result.success and result.code == "AUTH_OK"
+    assert seen == {"path": "/kms/openapi/knowledge/base/queryPersonBase", "authorization": "token-value"}
+
+
+def test_auth_reports_kms_auth_error():
+    response = httpx.Response(500, json={"success": False, "state": 21004, "message": "token不能为空"})
+    result = KmsClient(settings(), httpx.Client(transport=httpx.MockTransport(lambda _: response)), lambda _: None).test_auth("bad", "")
+    assert not result.success and result.code == "HTTP_500"

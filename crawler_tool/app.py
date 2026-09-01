@@ -113,6 +113,19 @@ def set_kms_auth(body: KmsAuthConfigRequest):
     }
 
 
+@app.post("/api/kms-auth/test")
+def test_kms_auth(body: KmsAuthConfigRequest):
+    """仅校验输入的鉴权信息，不保存凭据，也不修改 KMS 数据。"""
+    from .kms_client import KmsClient
+
+    kms = KmsClient(settings)
+    try:
+        result = kms.test_auth(body.authorization_token, body.cookie)
+    finally:
+        kms.close()
+    return {"ok": result.success, "code": result.code, "message": result.message}
+
+
 @app.get("/api/articles")
 def list_articles(
     page: int = Query(1, ge=1),

@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     kms_base_url: str = "http://10.1.3.144:20002"
     kms_path: str = "/kms/api/etl/dg/crawlerToBase"
     kms_update_path: str = "/kms/openapi/knowledge/document/update"
+    kms_auth_check_path: str = "/kms/openapi/knowledge/base/queryPersonBase"
     # KMS 网页实际请求使用 Authorization-Token；保留 kms_authorization 仅兼容旧 .env 配置。
     kms_authorization_token: str = ""
     kms_authorization: str = ""
@@ -54,6 +55,10 @@ class Settings(BaseSettings):
     @property
     def kms_update_url(self) -> str:
         return f"{self.kms_base_url.rstrip('/')}/{self.kms_update_path.lstrip('/')}"
+
+    @property
+    def kms_auth_check_url(self) -> str:
+        return f"{self.kms_base_url.rstrip('/')}/{self.kms_auth_check_path.lstrip('/')}"
 
     def ensure_directories(self) -> None:
         LOG_DIR.mkdir(parents=True, exist_ok=True)

@@ -57,19 +57,41 @@ class KmsClient:
         detail = response.text.replace("\r", " ").replace("\n", " ").strip()
         return f"KMS HTTP {response.status_code}" + (f": {detail[:500]}" if detail else "")
 
-    def _add_auth_headers(self, headers: dict[str, str]) -> None:
-        if self.settings.kms_authorization_token:
-            token = self.settings.kms_authorization_token
+    @staticmethod
+    def auth_headers(authorization_token: str, cookie: str) -> dict[str, str]:
+        headers = {"Content-Type": "application/json; charset=utf-8"}
+        token = authorization_token.strip()
+        if token:
             # 政策平台使用 Authorization-Token，KMS OpenAPI 则读取 access_token/Authorization。
             # 同一请求同时携带三种等值头，避免跨服务网关的鉴权字段不一致。
             headers["Authorization-Token"] = token
             headers["access_token"] = token
             headers["Authorization"] = token
+        if cookie.strip():
+            headers["Cookie"] = cookie.strip()
+        return headers
+
+    def _add_auth_headers(self, headers: dict[str, str]) -> None:
+        headers.update(self.auth_headers(self.settings.kms_authorization_token, self.settings.kms_cookie))
         # 兼容旧配置；新页面不再提供此字段。
         if self.settings.kms_authorization:
             headers["Authorization"] = self.settings.kms_authorization
-        if self.settings.kms_cookie:
-            headers["Cookie"] = self.settings.kms_cookie
+
+    def test_auth(self, authorization_token: str, cookie: str) -> KmsResult:
+        """调用 KMS 只读接口验证鉴权，不写入任何知识库数据。"""
+        try:
+            response = self.client.post(self.settings.kms_auth_check_url, headers=self.auth_headers(authorization_token, cookie))
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            return KmsResult(success=False, code="NETWORK_ERROR", message=f"KMS 网络异常: {type(exc).__name__}")
+        if response.status_code >= 400:
+            return KmsResult(success=False, code=f"HTTP_{response.status_code}", message=self._http_error_message(response))
+        try:
+            raw = response.json()
+        except ValueError:
+            raw = response.text.strip()
+        if isinstance(raw, dict) and raw.get("success") is False:
+            return KmsResult(success=False, code=str(raw.get("state") or "AUTH_FAILED"), message=str(raw.get("message") or "KMS 鉴权失败"), raw=raw)
+        return KmsResult(success=True, code="AUTH_OK", message="KMS 鉴权有效", raw=raw)
 
     def push(self, payload: CrawlerPayload) -> KmsResult:
         headers = {"Content-Type": "application/json; charset=utf-8"}
