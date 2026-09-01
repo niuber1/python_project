@@ -59,7 +59,12 @@ class KmsClient:
 
     def _add_auth_headers(self, headers: dict[str, str]) -> None:
         if self.settings.kms_authorization_token:
-            headers["Authorization-Token"] = self.settings.kms_authorization_token
+            token = self.settings.kms_authorization_token
+            # 政策平台使用 Authorization-Token，KMS OpenAPI 则读取 access_token/Authorization。
+            # 同一请求同时携带三种等值头，避免跨服务网关的鉴权字段不一致。
+            headers["Authorization-Token"] = token
+            headers["access_token"] = token
+            headers["Authorization"] = token
         # 兼容旧配置；新页面不再提供此字段。
         if self.settings.kms_authorization:
             headers["Authorization"] = self.settings.kms_authorization

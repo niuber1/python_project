@@ -72,9 +72,11 @@ def test_update_content_sends_configured_authorization_token_and_cookie():
     seen = {}
     def handler(request):
         seen["authorization_token"] = request.headers.get("authorization-token")
+        seen["access_token"] = request.headers.get("access_token")
+        seen["authorization"] = request.headers.get("authorization")
         seen["cookie"] = request.headers.get("cookie")
         return httpx.Response(200, json={"data": True})
     configured = Settings(_env_file=None, kms_base_url="https://kms.test", kms_authorization_token="token-value", kms_cookie="session=value")
     result = KmsClient(configured, httpx.Client(transport=httpx.MockTransport(handler)), lambda _: None).update_content("a" * 32, "<p>正文</p>")
     assert result.success
-    assert seen == {"authorization_token": "token-value", "cookie": "session=value"}
+    assert seen == {"authorization_token": "token-value", "access_token": "token-value", "authorization": "token-value", "cookie": "session=value"}
