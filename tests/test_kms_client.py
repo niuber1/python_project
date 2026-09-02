@@ -15,6 +15,13 @@ def settings():
     return Settings(_env_file=None, kms_base_url="https://kms.test")
 
 
+def test_openapi_urls_can_use_a_separate_gateway_origin():
+    configured = Settings(_env_file=None, kms_base_url="http://10.1.3.144:20002", kms_openapi_base_url="https://aies.dreamdt.cn")
+    assert configured.kms_url == "http://10.1.3.144:20002/kms/api/etl/dg/crawlerToBase"
+    assert configured.kms_update_url == "https://aies.dreamdt.cn/kms/openapi/knowledge/document/update"
+    assert configured.kms_auth_check_url == "https://aies.dreamdt.cn/kms/openapi/knowledge/base/queryPersonBase"
+
+
 def test_code_1_and_wrapped_code_7_are_success():
     responses = iter([httpx.Response(200, json="1"), httpx.Response(200, json={"data": "7"})])
     client = httpx.Client(transport=httpx.MockTransport(lambda _: next(responses)))
