@@ -161,8 +161,8 @@ class UpdateArticlesRequest(PushArticlesRequest):
 class KmsAuthConfigRequest(BaseModel):
     """仅用于本机服务运行期的 KMS 鉴权配置，不落库、不回显。"""
 
-    authorization_token: str = Field(default="", max_length=8192)
-    cookie: str = Field(default="", max_length=16384)
+    access_token: str = Field(default="", max_length=8192)
+    authorization: str = Field(default="", max_length=8192)
 
 
 class RunRecord(BaseModel):

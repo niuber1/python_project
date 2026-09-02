@@ -15,13 +15,6 @@ def settings():
     return Settings(_env_file=None, kms_base_url="https://kms.test")
 
 
-def test_openapi_urls_can_use_a_separate_gateway_origin():
-    configured = Settings(_env_file=None, kms_base_url="http://10.1.3.144:20002", kms_openapi_base_url="https://aies.dreamdt.cn")
-    assert configured.kms_url == "http://10.1.3.144:20002/kms/api/etl/dg/crawlerToBase"
-    assert configured.kms_update_url == "https://aies.dreamdt.cn/kms/openapi/knowledge/document/update"
-    assert configured.kms_auth_check_url == "https://aies.dreamdt.cn/kms/openapi/knowledge/base/queryPersonBase"
-
-
 def test_code_1_and_wrapped_code_7_are_success():
     responses = iter([httpx.Response(200, json="1"), httpx.Response(200, json={"data": "7"})])
     client = httpx.Client(transport=httpx.MockTransport(lambda _: next(responses)))
@@ -75,26 +68,20 @@ def test_update_content_posts_to_kms_document_update_endpoint():
     assert "knowledgeBaseId" not in seen["json"]
 
 
-def test_update_content_sends_configured_authorization_token_and_cookie():
+def test_update_content_sends_configured_access_token_and_authorization():
     seen = {}
     def handler(request):
-        seen["authorization_token"] = request.headers.get("authorization-token")
         seen["access_token"] = request.headers.get("access_token")
         seen["authorization"] = request.headers.get("authorization")
         seen["cookie"] = request.headers.get("cookie")
-        seen["client"] = request.headers.get("client")
-        seen["client_info"] = request.headers.get("client-info")
         return httpx.Response(200, json={"data": True})
-    configured = Settings(_env_file=None, kms_base_url="https://kms.test", kms_authorization_token="token-value", kms_cookie="client_info=client-info-value; session=value")
+    configured = Settings(_env_file=None, kms_base_url="https://kms.test", kms_access_token="access-value", kms_authorization="authorization-value")
     result = KmsClient(configured, httpx.Client(transport=httpx.MockTransport(handler)), lambda _: None).update_content("a" * 32, "<p>正文</p>")
     assert result.success
     assert seen == {
-        "authorization_token": "token-value",
-        "access_token": "token-value",
-        "authorization": "token-value",
-        "cookie": "client_info=client-info-value; session=value",
-        "client": "pc",
-        "client_info": "client-info-value",
+        "access_token": "access-value",
+        "authorization": "authorization-value",
+        "cookie": None,
     }
 
 
@@ -102,21 +89,19 @@ def test_auth_uses_read_only_kms_endpoint_and_does_not_persist_credentials():
     seen = {}
     def handler(request):
         seen["path"] = request.url.path
+        seen["access_token"] = request.headers.get("access_token")
         seen["authorization"] = request.headers.get("authorization")
-        seen["client"] = request.headers.get("client")
-        seen["client_info"] = request.headers.get("client-info")
         return httpx.Response(200, json=[])
-    result = KmsClient(settings(), httpx.Client(transport=httpx.MockTransport(handler)), lambda _: None).test_auth("token-value", "client_info=client-info-value; cookie=value")
+    result = KmsClient(settings(), httpx.Client(transport=httpx.MockTransport(handler)), lambda _: None).test_auth("access-value", "authorization-value")
     assert result.success and result.code == "AUTH_OK"
     assert seen == {
         "path": "/kms/openapi/knowledge/base/queryPersonBase",
-        "authorization": "token-value",
-        "client": "pc",
-        "client_info": "client-info-value",
+        "access_token": "access-value",
+        "authorization": "authorization-value",
     }
 
 
 def test_auth_reports_kms_auth_error():
     response = httpx.Response(500, json={"success": False, "state": 21004, "message": "token不能为空"})
-    result = KmsClient(settings(), httpx.Client(transport=httpx.MockTransport(lambda _: response)), lambda _: None).test_auth("bad", "")
+    result = KmsClient(settings(), httpx.Client(transport=httpx.MockTransport(lambda _: response)), lambda _: None).test_auth("bad-access", "bad-authorization")
     assert not result.success and result.code == "HTTP_500"

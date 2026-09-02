@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import time
 from typing import Any, Callable
 
@@ -15,8 +14,6 @@ KMS_MESSAGES = {
     "4": "参数校验失败", "5": "知识库处理中", "6": "文档已撤销", "7": "文档已存在",
     "8": "知识库类型不支持", "9": "文件处理失败", "11": "文档写入失败", "99": "未知错误",
 }
-
-CLIENT_INFO_COOKIE = re.compile(r"(?:^|;\s*)client_info=([^;]+)", re.IGNORECASE)
 
 class KmsClient:
     def __init__(
@@ -61,38 +58,22 @@ class KmsClient:
         return f"KMS HTTP {response.status_code}" + (f": {detail[:500]}" if detail else "")
 
     @staticmethod
-    def auth_headers(authorization_token: str, cookie: str) -> dict[str, str]:
-        headers = {
-            "Content-Type": "application/json; charset=utf-8",
-            # AIES 网关依赖与网页请求一致的客户端上下文，缺失时不会把
-            # Authorization-Token 转交给 KMS，后端会误报 token 不能为空。
-            "Client": "pc",
-        }
-        token = authorization_token.strip()
-        if token:
-            # KMS 网页请求使用 Authorization-Token；OpenAPI 网关兼容读取
-            # access_token/Authorization，因此三者都传递同一令牌。
-            headers["Authorization-Token"] = token
-            headers["access_token"] = token
-            headers["Authorization"] = token
-        normalized_cookie = cookie.strip()
-        if normalized_cookie:
-            headers["Cookie"] = normalized_cookie
-            client_info = CLIENT_INFO_COOKIE.search(normalized_cookie)
-            if client_info:
-                headers["Client-Info"] = client_info.group(1).strip()
+    def auth_headers(access_token: str, authorization: str) -> dict[str, str]:
+        """构造 KMS OpenAPI @Verification 所需的独立集成凭据。"""
+        headers = {"Content-Type": "application/json; charset=utf-8"}
+        if access_token.strip():
+            headers["access_token"] = access_token.strip()
+        if authorization.strip():
+            headers["Authorization"] = authorization.strip()
         return headers
 
     def _add_auth_headers(self, headers: dict[str, str]) -> None:
-        headers.update(self.auth_headers(self.settings.kms_authorization_token, self.settings.kms_cookie))
-        # 兼容旧配置；新页面不再提供此字段。
-        if self.settings.kms_authorization:
-            headers["Authorization"] = self.settings.kms_authorization
+        headers.update(self.auth_headers(self.settings.kms_access_token, self.settings.kms_authorization))
 
-    def test_auth(self, authorization_token: str, cookie: str) -> KmsResult:
+    def test_auth(self, access_token: str, authorization: str) -> KmsResult:
         """调用 KMS 只读接口验证鉴权，不写入任何知识库数据。"""
         try:
-            response = self.client.post(self.settings.kms_auth_check_url, headers=self.auth_headers(authorization_token, cookie))
+            response = self.client.post(self.settings.kms_auth_check_url, headers=self.auth_headers(access_token, authorization))
         except (httpx.TimeoutException, httpx.NetworkError) as exc:
             return KmsResult(success=False, code="NETWORK_ERROR", message=f"KMS 网络异常: {type(exc).__name__}")
         if response.status_code >= 400:

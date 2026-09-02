@@ -29,14 +29,11 @@ class Settings(BaseSettings):
     db_name: str = "dsfa_policy"
     kms_db_name: str = "kms_kms"
     kms_base_url: str = "http://10.1.3.144:20002"
-    # ETL 入库可直连内网；浏览器登录态的正文更新需经 AIES 域名网关校验。
-    # 留空时与 kms_base_url 保持一致，便于其他部署环境沿用原配置。
-    kms_openapi_base_url: str = ""
     kms_path: str = "/kms/api/etl/dg/crawlerToBase"
     kms_update_path: str = "/kms/openapi/knowledge/document/update"
     kms_auth_check_path: str = "/kms/openapi/knowledge/base/queryPersonBase"
-    # KMS 网页实际请求使用 Authorization-Token；保留 kms_authorization 仅兼容旧 .env 配置。
-    kms_authorization_token: str = ""
+    # @Verification 使用独立的 OpenAPI 集成凭据，不是浏览器登录会话。
+    kms_access_token: str = ""
     kms_authorization: str = ""
     kms_cookie: str = ""
     bind_host: str = "127.0.0.1"
@@ -57,15 +54,11 @@ class Settings(BaseSettings):
 
     @property
     def kms_update_url(self) -> str:
-        return f"{self._kms_openapi_origin}/{self.kms_update_path.lstrip('/')}"
+        return f"{self.kms_base_url.rstrip('/')}/{self.kms_update_path.lstrip('/')}"
 
     @property
     def kms_auth_check_url(self) -> str:
-        return f"{self._kms_openapi_origin}/{self.kms_auth_check_path.lstrip('/')}"
-
-    @property
-    def _kms_openapi_origin(self) -> str:
-        return (self.kms_openapi_base_url or self.kms_base_url).rstrip("/")
+        return f"{self.kms_base_url.rstrip('/')}/{self.kms_auth_check_path.lstrip('/')}"
 
     def ensure_directories(self) -> None:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
