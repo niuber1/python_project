@@ -410,18 +410,15 @@ async function startUrlCrawl(dryRun) {
       return alert(`URL 格式无效：${url}`);
     }
   }
-  const source_code = document.querySelector('input[name="urlSource"]:checked')?.value;
-  if (!source_code) return alert("请选择 URL 来源");
-  const sourceName = source_code === "suishenban" ? "随申办" : "企服云";
   const message = dryRun
-    ? `将预检 ${urls.length} 条${sourceName} URL，不写入本地库或 KMS。确认继续？`
-    : `将抓取 ${urls.length} 条${sourceName} URL 并写入本地待入库列表，不调用 KMS。确认继续？`;
+    ? `将自动识别并预检 ${urls.length} 条 URL，不写入本地库或 KMS。确认继续？`
+    : `将自动识别并抓取 ${urls.length} 条 URL，写入本地待入库列表，不调用 KMS。确认继续？`;
   if (!confirm(message)) return;
   try {
     const v = await json("/api/url-runs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ urls, source_code, dry_run: dryRun, confirm_write: !dryRun }),
+      body: JSON.stringify({ urls, dry_run: dryRun, confirm_write: !dryRun }),
     });
     watch(v.run_id, false, "url");
   } catch (e) {

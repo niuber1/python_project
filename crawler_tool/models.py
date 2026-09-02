@@ -150,7 +150,6 @@ class StartRunRequest(BaseModel):
 
 class UrlRunRequest(BaseModel):
     urls: list[str] = Field(min_length=1, max_length=200)
-    source_code: Literal["suishenban", "qifuyun"]
     dry_run: bool = False
     confirm_write: bool = False
 

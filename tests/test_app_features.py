@@ -21,7 +21,7 @@ def test_content_update_api_is_unavailable_when_feature_is_disabled(monkeypatch)
 
 def test_url_run_api_queues_local_only_crawl(monkeypatch):
     received = {}
-    monkeypatch.setattr(app_module.manager, "start_url_run", lambda urls, source_code, dry_run: received.update(urls=urls, source_code=source_code, dry_run=dry_run) or "url-run")
-    result = app_module.start_url_run(UrlRunRequest(urls=["https://example.com/?policyId=1"], source_code="qifuyun", confirm_write=True))
+    monkeypatch.setattr(app_module.manager, "start_url_run", lambda urls, dry_run: received.update(urls=urls, dry_run=dry_run) or "url-run")
+    result = app_module.start_url_run(UrlRunRequest(urls=["https://example.com/?policyId=1"], confirm_write=True))
     assert result == {"run_id": "url-run", "status": "queued"}
-    assert received == {"urls": ["https://example.com/?policyId=1"], "source_code": "qifuyun", "dry_run": False}
+    assert received == {"urls": ["https://example.com/?policyId=1"], "dry_run": False}

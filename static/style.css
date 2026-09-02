@@ -294,17 +294,6 @@ pre {
   font: inherit;
   font-weight: 400;
 }
-.url-source-options {
-  display: flex;
-  gap: 18px;
-  margin: 14px 0;
-}
-.url-source-options label {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  cursor: pointer;
-}
 .selection-bar {
   border-top: 1px solid var(--line);
   padding-top: 16px;

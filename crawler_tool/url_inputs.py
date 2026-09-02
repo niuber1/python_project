@@ -49,8 +49,18 @@ def _first(values: dict[str, list[str]], *keys: str) -> str | None:
     return None
 
 
-def candidate_from_url(source_code: str, url: str) -> PolicyCandidate:
+def source_from_url(url: str) -> str:
+    host = (urlparse(url).hostname or "").lower()
+    if host == "zwdt.sh.gov.cn" or host.endswith(".zwdt.sh.gov.cn"):
+        return "suishenban"
+    if host == "shpolicy.ssme.sh.gov.cn" or host.endswith(".shpolicy.ssme.sh.gov.cn"):
+        return "qifuyun"
+    raise ValueError("无法根据 URL 域名识别来源；仅支持随申办或企服云详情页")
+
+
+def candidate_from_url(url: str) -> PolicyCandidate:
     """将两个受支持来源的详情页 URL 转为可复用的抓取候选项。"""
+    source_code = source_from_url(url)
     values = _parameters(url)
     path = urlparse(url).path.lower()
     if source_code == "suishenban":

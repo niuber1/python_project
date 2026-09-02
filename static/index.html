@@ -145,16 +145,12 @@
             <div>
               <p class="eyebrow">URL CRAWL</p>
               <h2>按 URL 抓取政策</h2>
-              <p class="hint">每行或每个英文分号输入一条所选来源的政策/项目详情页 URL；只保存到本地待入库，不会调用 KMS。</p>
+              <p class="hint">每行或每个英文分号输入一条随申办或企服云政策/项目详情页 URL；系统自动识别来源，只保存到本地待入库，不会调用 KMS。</p>
             </div>
           </div>
           <label class="url-input-label">政策详情 URL
             <textarea id="urlInput" rows="7" spellcheck="false" placeholder="https://…?policyId=…&#10;https://…?policyProjectId=…"></textarea>
           </label>
-          <div class="url-source-options" id="urlSourceOptions">
-            <label><input type="radio" name="urlSource" value="suishenban" checked /> 随申办</label>
-            <label><input type="radio" name="urlSource" value="qifuyun" /> 企服云</label>
-          </div>
           <div class="primary-actions">
             <button id="previewUrlCrawl" class="secondary">预检抓取</button>
             <button id="startUrlCrawl">开始抓取</button>

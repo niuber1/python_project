@@ -144,7 +144,7 @@ def test_url_run_only_stores_locally_and_does_not_construct_kms(monkeypatch):
     monkeypatch.setattr(engine_mod, "KmsClient", lambda _: (_ for _ in ()).throw(AssertionError("URL 抓取不得调用 KMS")))
     manager._stop_flags["url-run"] = threading.Event()
     manager._active_run = "url-run"
-    manager._execute_url("url-run", "qifuyun_declare", ["https://shpolicy.ssme.sh.gov.cn/knowledge/#/policy?policyId=q-1"], False)
+    manager._execute_url("url-run", ["https://shpolicy.ssme.sh.gov.cn/knowledge/#/policy?policyId=q-1"], False)
     assert db.article_results == []
     assert any(item.get("phase") == "store" and item.get("status") == "success" for item in db.items)
     assert manager._active_run is None

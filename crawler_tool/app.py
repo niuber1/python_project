@@ -241,7 +241,7 @@ def start_url_run(body: UrlRunRequest):
     if not body.dry_run and not body.confirm_write:
         raise HTTPException(400, "正式 URL 抓取必须设置 confirm_write=true")
     try:
-        run_id = manager.start_url_run(body.urls, body.source_code, body.dry_run)
+        run_id = manager.start_url_run(body.urls, body.dry_run)
     except RunConflictError as exc:
         raise HTTPException(409, {"message": "已有任务运行中", "active_run": str(exc)}) from exc
     except ValueError as exc:
