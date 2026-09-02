@@ -15,7 +15,7 @@ from .adapters.base import SourceEmptyError
 from .config import TASKS, Settings
 from .database import Database
 from .events import EventStore
-from .html_utils import compose_document_content, content_sha256, prepend_document_metadata
+from .html_utils import compose_document_content, content_sha256
 from . import kms_kb
 from .kms_client import KmsClient
 from .models import CrawlerPayload, KmsResult, PolicyArticle, deterministic_document_id
@@ -50,6 +50,8 @@ class RunManager:
     def start(self, task_codes: list[str], dry_run: bool, trigger_type: str = "manual", phase: str = "all", auto_sync: bool = False, refresh_existing: bool = False) -> str:
         if phase not in {"all", "crawl", "push"}:
             raise ValueError(f"未知阶段: {phase}")
+        if refresh_existing and not self.settings.enable_content_update:
+            raise ValueError("正文更新功能当前已关闭，不能重新抓取并比对已存在政策")
         task_codes = task_codes or list(TASKS)
         unknown = sorted(set(task_codes) - set(TASKS))
         if unknown:
@@ -463,7 +465,9 @@ class RunManager:
             self._release(run_id)
 
     def update_articles(self, article_ids: list[str], dry_run: bool) -> str:
-        """将历史抓取正文补齐元数据后，安全覆盖更新到 KMS。"""
+        """将历史抓取的纯正文安全覆盖更新到 KMS。"""
+        if not self.settings.enable_content_update:
+            raise ValueError("正文更新功能当前已关闭")
         with self._guard:
             if self._active_run:
                 raise RunConflictError(self._active_run)
@@ -519,11 +523,7 @@ class RunManager:
                             self.db.update_run_item(item_id, phase="content_update", status="skipped", message=message, finished_at=datetime.now())
                             outcome = "skipped"
                         else:
-                            content = prepend_document_metadata(
-                                row["content_html"], title=row["title"], publish_date=row.get("publish_date"),
-                                document_no=row.get("document_no"), publish_dept=row.get("publish_dept"),
-                                policy_level=row.get("policy_level"),
-                            )
+                            content = row["content_html"]
                             if dry_run:
                                 message = "预检通过：KMS 文档来源匹配，正式执行将覆盖正文并重新处理"
                                 self.db.update_run_item(item_id, kms_document_id=target["kms_hub_document_id"], phase="validate", status="dry_run", message=message, duration_ms=int((time.monotonic()-started)*1000), finished_at=datetime.now())

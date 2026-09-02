@@ -100,9 +100,16 @@ def get_kms_auth_status():
     }
 
 
+@app.get("/api/features")
+def get_features():
+    return {"content_update_enabled": settings.enable_content_update}
+
+
 @app.put("/api/kms-auth")
 def set_kms_auth(body: KmsAuthConfigRequest):
     """更新当前进程的 KMS 鉴权；重启后恢复 .env / 环境变量的原始配置。"""
+    if not settings.enable_content_update:
+        raise HTTPException(404, "正文更新功能当前已关闭")
     settings.kms_access_token = body.access_token.strip()
     settings.kms_authorization = body.authorization.strip()
     settings.kms_cookie = ""
@@ -116,6 +123,8 @@ def set_kms_auth(body: KmsAuthConfigRequest):
 @app.post("/api/kms-auth/test")
 def test_kms_auth(body: KmsAuthConfigRequest):
     """优先校验页面输入；留空时按文档 2.1 自动获取应用令牌。"""
+    if not settings.enable_content_update:
+        raise HTTPException(404, "正文更新功能当前已关闭")
     from .kms_client import KmsClient
 
     kms = KmsClient(settings)
@@ -155,7 +164,8 @@ def article_counts():
         return _counts_cache["data"]
     try:
         data = database.article_status_counts()
-        data.update({f"update_{key}": value for key, value in database.content_update_counts().items()})
+        if settings.enable_content_update:
+            data.update({f"update_{key}": value for key, value in database.content_update_counts().items()})
     except Exception:
         data = {"pending": 0, "success": 0, "failed": 0, "update_pending": 0, "update_failed": 0, "update_unmatched": 0, "update_success": 0, "update_not_needed": 0}
     _counts_cache.update(at=now, data=data)
@@ -196,6 +206,8 @@ def push_articles(body: PushArticlesRequest):
 
 @app.post("/api/articles/update", status_code=202)
 def update_articles(body: UpdateArticlesRequest):
+    if not settings.enable_content_update:
+        raise HTTPException(404, "正文更新功能当前已关闭")
     if not body.dry_run and not body.confirm_write:
         raise HTTPException(400, "正式覆盖更新必须设置 confirm_write=true")
     ids = list(dict.fromkeys(body.article_ids))

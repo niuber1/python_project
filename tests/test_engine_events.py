@@ -60,7 +60,7 @@ def test_crawl_phase_skips_existing_article():
 
 
 def test_refresh_existing_only_marks_changed_document_for_manual_update():
-    db=FakeDb(); manager=RunManager(Settings(_env_file=None),db,EventStore())
+    db=FakeDb(); manager=RunManager(Settings(_env_file=None, enable_content_update=True),db,EventStore())
     candidate=PolicyCandidate(source_code="qifuyun",source_item_id="q1",project_name="项目",detail_ref="q1")
     existing={"policy_crawler_article_id":"article","kms_status":"success","content_hash":"old"}
     class Adapter:
@@ -72,7 +72,7 @@ def test_refresh_existing_only_marks_changed_document_for_manual_update():
 
 def test_refresh_existing_skips_when_content_hash_unchanged():
     from crawler_tool.html_utils import compose_document_content, content_sha256
-    db=FakeDb(); manager=RunManager(Settings(_env_file=None),db,EventStore())
+    db=FakeDb(); manager=RunManager(Settings(_env_file=None, enable_content_update=True),db,EventStore())
     candidate=PolicyCandidate(source_code="qifuyun",source_item_id="q1",project_name="项目",detail_ref="q1")
     article=PolicyArticle(source_code="qifuyun",source_item_id="q1",source_name="源",title="标题",project_name="项目",original_url="https://example.com",raw_content_html="<p>正文</p>")
     existing={"policy_crawler_article_id":"article","kms_status":"success","content_hash":content_sha256(compose_document_content(article))}
@@ -116,6 +116,14 @@ def test_start_run_request_phase_validation():
     assert StartRunRequest(task_codes=[], refresh_existing=True).refresh_existing
     with pytest.raises(ValidationError):
         StartRunRequest(task_codes=[], phase="bogus")
+
+
+def test_content_update_disabled_rejects_refresh_and_manual_update():
+    manager = RunManager(Settings(_env_file=None, enable_content_update=False), FakeDb(), EventStore())
+    with pytest.raises(ValueError, match="正文更新功能当前已关闭"):
+        manager.start(["qifuyun_declare"], False, refresh_existing=True)
+    with pytest.raises(ValueError, match="正文更新功能当前已关闭"):
+        manager.update_articles(["article"], False)
 
 
 def test_auto_sync_chains_push_run(monkeypatch):

@@ -6,7 +6,7 @@ import hashlib
 import html
 import re
 from datetime import date
-from typing import Iterable
+from typing import Any, Iterable
 from urllib.parse import urljoin
 
 import bleach
@@ -122,15 +122,40 @@ def prepend_document_metadata(
 
 
 def compose_document_content(article: PolicyArticle) -> str:
-    """生成发送 KMS 与智能体的完整正文：前置元数据、正文、附件。"""
-    return prepend_document_metadata(
-        normalize_article_html(article),
-        title=article.title,
-        publish_date=article.publish_date,
-        document_no=article.document_no,
-        publish_dept=article.publish_dept,
-        policy_level=article.policy_level,
-    )
+    """生成发送 KMS 的纯政策正文；标题、日期、文号均由独立字段承载。"""
+    return normalize_article_html(article)
+
+
+def parse_shanghai_government_page(page_html: str) -> dict[str, Any]:
+    """解析上海市政府公文详情页的元数据与正文容器，供回归测试及后续来源接入复用。"""
+    soup = BeautifulSoup(page_html, "lxml")
+
+    def meta(name: str) -> str:
+        node = soup.select_one(f'meta[name="{name}"]')
+        return str(node.get("content") or "").strip() if node else ""
+
+    title_node = soup.select_one("#ivs_title")
+    title = meta("title") or (title_node.get_text(" ", strip=True) if title_node else "")
+    agency, year, number = meta("documentAgency"), meta("documentPublishYear"), meta("documentNum")
+    document_no = f"{agency}〔{year}〕{number}号" if agency and year and number else ""
+    content = soup.select_one("#ivs_content")
+    raw_publish_date = meta("publishDate") or meta("displayDate")
+    # 上海市政府页面的 publishDate 形如 ``Fri May 19 00:00:00 CST 2023``；
+    # ``CST`` 在不同操作系统的 strptime 支持不一致，故直接提取月日年。
+    english_date = re.search(r"\b([A-Z][a-z]{2})\s+(\d{1,2})\b.*?\b(20\d{2})\b", raw_publish_date)
+    month_numbers = {month: index for index, month in enumerate(
+        ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), 1
+    )}
+    if english_date and english_date.group(1) in month_numbers:
+        publish_date = date(int(english_date.group(3)), month_numbers[english_date.group(1)], int(english_date.group(2)))
+    else:
+        publish_date = parse_date(raw_publish_date)
+    return {
+        "title": title,
+        "publish_date": publish_date,
+        "document_no": document_no,
+        "content_html": content.decode_contents() if content else "",
+    }
 
 
 def content_sha256(content: str) -> str:

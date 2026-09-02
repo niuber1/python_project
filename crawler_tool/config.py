@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     kms_access_token: str = ""
     kms_authorization: str = ""
     kms_cookie: str = ""
+    # 正文覆盖更新功能保留但默认关闭；开启后才允许重新抓取比对和覆盖 KMS 正文。
+    enable_content_update: bool = False
     bind_host: str = "127.0.0.1"
     bind_port: int = 8000
     admin_user: str = ""
