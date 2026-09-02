@@ -12,10 +12,10 @@
 
   <details class="connection card" id="kmsAuthDetails">
     <summary><span><b>KMS 正文更新鉴权</b><small id="kmsAuthStatus">可选</small></span><span class="summary-hint">仅覆盖更新正文时使用</span></summary>
-    <p class="hint"><b>“保存到知识库”无需配置此处，直接可用。</b> 本配置仅用于“待更新 / 覆盖更新正文”的 KMS OpenAPI。仅保存到当前本机服务内存，立即生效；不会写入数据库或回显，重启服务后需重新配置。请从当前 KMS 环境的请求头复制 <code>Authorization-Token</code>；Cookie 可选，但必须来自同一环境。</p>
+    <p class="hint"><b>“保存到知识库”无需配置此处，直接可用。</b> 本配置仅用于“待更新 / 覆盖更新正文”的 KMS OpenAPI。仅保存到当前本机服务内存，立即生效；不会写入数据库或回显，重启服务后需重新配置。请从当前 KMS 环境的同一条浏览器请求复制 <code>Authorization-Token</code> 与完整 Cookie；Cookie 必须包含 <code>client_info</code>。</p>
     <div class="auth-grid">
       <label>Authorization-Token<input id="kmsAuthorizationToken" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴请求头 Authorization-Token 的值"></label>
-      <label>Cookie（可选）<input id="kmsCookie" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴同一 KMS 环境的完整 Cookie 请求头"></label>
+      <label>Cookie（正文更新必填）<input id="kmsCookie" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴完整 Cookie，必须包含 client_info"></label>
     </div>
     <div class="actions"><button id="testKmsAuth" class="secondary">测试正文更新鉴权</button><button id="saveKmsAuth" class="secondary">保存更新鉴权</button><span id="kmsAuthMessage" class="hint"></span></div>
   </details>
