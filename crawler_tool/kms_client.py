@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from typing import Any, Callable
 
@@ -14,6 +15,8 @@ KMS_MESSAGES = {
     "4": "参数校验失败", "5": "知识库处理中", "6": "文档已撤销", "7": "文档已存在",
     "8": "知识库类型不支持", "9": "文件处理失败", "11": "文档写入失败", "99": "未知错误",
 }
+
+CLIENT_INFO_COOKIE = re.compile(r"(?:^|;\s*)client_info=([^;]+)", re.IGNORECASE)
 
 class KmsClient:
     def __init__(
@@ -59,7 +62,12 @@ class KmsClient:
 
     @staticmethod
     def auth_headers(authorization_token: str, cookie: str) -> dict[str, str]:
-        headers = {"Content-Type": "application/json; charset=utf-8"}
+        headers = {
+            "Content-Type": "application/json; charset=utf-8",
+            # AIES 网关依赖与网页请求一致的客户端上下文，缺失时不会把
+            # Authorization-Token 转交给 KMS，后端会误报 token 不能为空。
+            "Client": "pc",
+        }
         token = authorization_token.strip()
         if token:
             # KMS 网页请求使用 Authorization-Token；OpenAPI 网关兼容读取
@@ -67,8 +75,12 @@ class KmsClient:
             headers["Authorization-Token"] = token
             headers["access_token"] = token
             headers["Authorization"] = token
-        if cookie.strip():
-            headers["Cookie"] = cookie.strip()
+        normalized_cookie = cookie.strip()
+        if normalized_cookie:
+            headers["Cookie"] = normalized_cookie
+            client_info = CLIENT_INFO_COOKIE.search(normalized_cookie)
+            if client_info:
+                headers["Client-Info"] = client_info.group(1).strip()
         return headers
 
     def _add_auth_headers(self, headers: dict[str, str]) -> None:
