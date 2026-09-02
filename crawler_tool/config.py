@@ -31,7 +31,10 @@ class Settings(BaseSettings):
     kms_base_url: str = "http://10.1.3.144:20002"
     kms_path: str = "/kms/api/etl/dg/crawlerToBase"
     kms_update_path: str = "/kms/openapi/knowledge/document/update"
-    kms_auth_check_path: str = "/kms/openapi/knowledge/base/queryPersonBase"
+    kms_auth_check_path: str = "/kms/openapi/knowledge/stat/overview"
+    kms_token_path: str = "/platform/api/v2/auth/getToken"
+    kms_application_key: str = ""
+    kms_application_secret: str = ""
     # @Verification 使用独立的 OpenAPI 集成凭据，不是浏览器登录会话。
     kms_access_token: str = ""
     kms_authorization: str = ""
@@ -59,6 +62,10 @@ class Settings(BaseSettings):
     @property
     def kms_auth_check_url(self) -> str:
         return f"{self.kms_base_url.rstrip('/')}/{self.kms_auth_check_path.lstrip('/')}"
+
+    @property
+    def kms_token_url(self) -> str:
+        return f"{self.kms_base_url.rstrip('/')}/{self.kms_token_path.lstrip('/')}"
 
     def ensure_directories(self) -> None:
         LOG_DIR.mkdir(parents=True, exist_ok=True)

@@ -94,6 +94,7 @@ def get_tasks():
 def get_kms_auth_status():
     """只返回是否已配置，绝不向页面回传鉴权原文。"""
     return {
+        "has_application_credentials": bool(settings.kms_application_key and settings.kms_application_secret),
         "has_access_token": bool(settings.kms_access_token),
         "has_authorization": bool(settings.kms_authorization),
     }
@@ -114,7 +115,7 @@ def set_kms_auth(body: KmsAuthConfigRequest):
 
 @app.post("/api/kms-auth/test")
 def test_kms_auth(body: KmsAuthConfigRequest):
-    """仅校验输入的鉴权信息，不保存凭据，也不修改 KMS 数据。"""
+    """优先校验页面输入；留空时按文档 2.1 自动获取应用令牌。"""
     from .kms_client import KmsClient
 
     kms = KmsClient(settings)

@@ -12,9 +12,9 @@
 
   <details class="connection card" id="kmsAuthDetails">
     <summary><span><b>KMS 正文更新鉴权</b><small id="kmsAuthStatus">可选</small></span><span class="summary-hint">仅覆盖更新正文时使用</span></summary>
-    <p class="hint"><b>“保存到知识库”无需配置此处，直接可用。</b> 本配置仅用于“待更新 / 覆盖更新正文”的 KMS OpenAPI。必填项是 144 OpenAPI 独立签发的 <code>access_token</code>，不是浏览器登录请求中的 Authorization-Token 或 Cookie；<code>Authorization</code> 仅在该 OpenAPI 应用另有要求时填写。配置只保存在当前本机服务内存，不会写入数据库或回显。</p>
+    <p class="hint"><b>已按接口文档 2.1 配置应用鉴权：</b>正文更新时自动获取、缓存并刷新 <code>accessToken</code>，无需复制浏览器 Authorization-Token 或 Cookie。“保存到知识库”仍可直接使用。下方仅用于临时令牌覆盖与排障，不会回显或写入数据库。</p>
     <div class="auth-grid">
-      <label>access_token<input id="kmsAccessToken" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴 144 OpenAPI 的 access_token"></label>
+      <label>临时 accessToken（可选）<input id="kmsAccessToken" type="password" autocomplete="off" spellcheck="false" placeholder="通常留空，自动获取失败时用于排障"></label>
       <label>Authorization（可选）<input id="kmsAuthorization" type="password" autocomplete="off" spellcheck="false" placeholder="OpenAPI 应用另有要求时填写"></label>
     </div>
     <div class="actions"><button id="testKmsAuth" class="secondary">测试正文更新鉴权</button><button id="saveKmsAuth" class="secondary">保存更新鉴权</button><span id="kmsAuthMessage" class="hint"></span></div>
