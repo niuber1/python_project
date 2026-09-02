@@ -148,6 +148,13 @@ class StartRunRequest(BaseModel):
     refresh_existing: bool = False
 
 
+class UrlRunRequest(BaseModel):
+    urls: list[str] = Field(min_length=1, max_length=200)
+    source_code: Literal["suishenban", "qifuyun"]
+    dry_run: bool = False
+    confirm_write: bool = False
+
+
 class PushArticlesRequest(BaseModel):
     article_ids: list[str] = Field(min_length=1)
     dry_run: bool = False

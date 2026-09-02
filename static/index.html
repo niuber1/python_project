@@ -58,6 +58,7 @@
         <button class="tab" id="tabArticlesBtn">
           数据处理 <span id="pendingBadge" class="count-badge"></span>
         </button>
+        <button class="tab" id="tabUrlsBtn">URL 抓取</button>
       </nav>
 
       <section id="panelTasks">
@@ -135,6 +136,47 @@
               <tbody id="runs"></tbody>
             </table>
           </div>
+        </section>
+      </section>
+
+      <section id="panelUrls" style="display: none">
+        <section class="card workflow">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">URL CRAWL</p>
+              <h2>按 URL 抓取政策</h2>
+              <p class="hint">每行或每个英文分号输入一条所选来源的政策/项目详情页 URL；只保存到本地待入库，不会调用 KMS。</p>
+            </div>
+          </div>
+          <label class="url-input-label">政策详情 URL
+            <textarea id="urlInput" rows="7" spellcheck="false" placeholder="https://…?policyId=…&#10;https://…?policyProjectId=…"></textarea>
+          </label>
+          <div class="url-source-options" id="urlSourceOptions">
+            <label><input type="radio" name="urlSource" value="suishenban" checked /> 随申办</label>
+            <label><input type="radio" name="urlSource" value="qifuyun" /> 企服云</label>
+          </div>
+          <div class="primary-actions">
+            <button id="previewUrlCrawl" class="secondary">预检抓取</button>
+            <button id="startUrlCrawl">开始抓取</button>
+          </div>
+        </section>
+
+        <section class="card current-run">
+          <div class="section-heading row">
+            <div><p class="eyebrow">STATUS</p><h2>当前 URL 抓取</h2></div>
+            <code id="urlRunId">-</code>
+          </div>
+          <div class="progress"><div id="urlBar"></div></div>
+          <div class="stats">
+            <span>总数 <b id="urlTotal">0</b></span><span>成功 <b id="urlSucceeded">0</b></span><span>跳过 <b id="urlSkipped">0</b></span><span>失败 <b id="urlFailed">0</b></span>
+            <button id="urlStop" class="text-button" disabled>停止任务</button>
+          </div>
+          <pre id="urlLogs">尚未启动 URL 抓取</pre>
+        </section>
+
+        <section class="card">
+          <div class="section-heading row"><div><p class="eyebrow">HISTORY</p><h2>URL 抓取记录</h2></div></div>
+          <div class="table-wrap"><table><thead><tr><th>批次</th><th>模式</th><th>状态</th><th>结果</th><th>开始时间</th><th></th></tr></thead><tbody id="urlRuns"></tbody></table></div>
         </section>
       </section>
 

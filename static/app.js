@@ -2,6 +2,7 @@ let currentRun = null,
   eventSource = null,
   selectedTasks = null,
   kmsAutoAuth = false;
+let currentRunTarget = "tasks";
 let articlePage = 1,
   articleSize = 20,
   articleSource = "",
@@ -32,26 +33,34 @@ async function json(url, options) {
     );
   return v;
 }
-function log(message, time = "") {
-  const box = $("logs");
+const runElements = {
+  tasks: { runId: "runId", stop: "stop", logs: "logs", total: "total", succeeded: "succeeded", skipped: "skipped", failed: "failed", bar: "bar" },
+  url: { runId: "urlRunId", stop: "urlStop", logs: "urlLogs", total: "urlTotal", succeeded: "urlSucceeded", skipped: "urlSkipped", failed: "urlFailed", bar: "urlBar" },
+};
+function runElement(target, key) {
+  return $(runElements[target][key]);
+}
+function log(message, time = "", target = "tasks") {
+  const box = runElement(target, "logs");
   box.textContent += `\n${time ? `[${time}] ` : ""}${message}`;
   box.scrollTop = box.scrollHeight;
 }
-function stats(v) {
+function stats(v, target = "tasks") {
   for (const key of ["total", "succeeded", "skipped", "failed"])
-    if (v[key] != null) $(key).textContent = v[key];
+    if (v[key] != null) runElement(target, key).textContent = v[key];
   const total = v.total || 0,
     done = v.processed || 0;
-  $("bar").style.width = `${total ? Math.min(100, (done / total) * 100) : 0}%`;
+  runElement(target, "bar").style.width = `${total ? Math.min(100, (done / total) * 100) : 0}%`;
 }
-function watch(id, append = false) {
+function watch(id, append = false, target = "tasks") {
   currentRun = id;
-  $("runId").textContent = id;
-  $("stop").disabled = false;
-  if (!append) $("logs").textContent = "连接实时日志…";
+  currentRunTarget = target;
+  runElement(target, "runId").textContent = id;
+  runElement(target, "stop").disabled = false;
+  if (!append) runElement(target, "logs").textContent = "连接实时日志…";
   if (eventSource) eventSource.close();
   eventSource = new EventSource(`/api/runs/${id}/events`);
-  eventSource.onmessage = (e) => log(e.data);
+  eventSource.onmessage = (e) => log(e.data, "", target);
   for (const type of [
     "status",
     "log",
@@ -62,11 +71,11 @@ function watch(id, append = false) {
   ])
     eventSource.addEventListener(type, (e) => {
       const v = JSON.parse(e.data);
-      log(v.message, v.time);
-      stats(v);
+      log(v.message, v.time, target);
+      stats(v, target);
       if (type === "complete" || type === "error") {
         eventSource.close();
-        $("stop").disabled = true;
+        runElement(target, "stop").disabled = true;
         load();
         if ($("panelArticles").style.display !== "none") loadArticles();
       }
@@ -80,6 +89,7 @@ function taskLabel(type) {
       retry: "重试失败",
       "manual-crawl": "手动抓取",
       "manual-push": "入库",
+      "manual-url": "URL 抓取",
     }[type] || type
   );
 }
@@ -104,12 +114,18 @@ async function load() {
     $("pendingBadge").textContent = v.pending_count
       ? `${v.pending_count} 条待入库`
       : "";
+    const runRow = (r, target = "tasks") =>
+      `<tr><td><code>${esc(r.run_id.slice(0, 10))}…</code></td><td>${esc(taskLabel(r.trigger_type))}</td><td>${r.dry_run ? "预检" : "正式"}</td><td>${esc(r.status)}</td><td>${r.succeeded}/${r.skipped}/${r.failed}</td><td>${esc(r.started_at || "-")}</td><td><button class="secondary" onclick="viewRun('${esc(r.run_id)}','${target}')">查看</button>${r.failed && target === "tasks" ? ` <button class="secondary" onclick="retryRun('${esc(r.run_id)}')">重试</button>` : ""}</td></tr>`;
     $("runs").innerHTML = v.recent_runs
+      .filter((r) => r.trigger_type !== "manual-url")
       .map(
-        (r) =>
-          `<tr><td><code>${esc(r.run_id.slice(0, 10))}…</code></td><td>${esc(taskLabel(r.trigger_type))}</td><td>${r.dry_run ? "预检" : "正式"}</td><td>${esc(r.status)}</td><td>${r.succeeded}/${r.skipped}/${r.failed}</td><td>${esc(r.started_at || "-")}</td><td><button class="secondary" onclick="viewRun('${esc(r.run_id)}')">查看</button>${r.failed ? ` <button class="secondary" onclick="retryRun('${esc(r.run_id)}')">重试</button>` : ""}</td></tr>`,
+        (r) => runRow(r),
       )
       .join("");
+    $("urlRuns").innerHTML = v.recent_runs
+      .filter((r) => r.trigger_type === "manual-url")
+      .map((r) => runRow(r, "url"))
+      .join("") || '<tr><td colspan="6" class="muted">暂无 URL 抓取记录</td></tr>';
   } catch (e) {
     log(`加载失败：${e.message}`);
   }
@@ -369,18 +385,61 @@ async function processSelected(dryRun) {
 }
 function showTab(name) {
   const tasks = name === "tasks";
+  const urls = name === "urls";
   $("panelTasks").style.display = tasks ? "" : "none";
-  $("panelArticles").style.display = tasks ? "none" : "";
+  $("panelUrls").style.display = urls ? "" : "none";
+  $("panelArticles").style.display = name === "articles" ? "" : "none";
   $("tabTasksBtn").classList.toggle("active", tasks);
-  $("tabArticlesBtn").classList.toggle("active", !tasks);
-  if (!tasks) loadArticles();
+  $("tabArticlesBtn").classList.toggle("active", name === "articles");
+  $("tabUrlsBtn").classList.toggle("active", urls);
+  if (name === "articles") loadArticles();
 }
 $("testKmsAuth").onclick = testKmsAuth;
 $("saveKmsAuth").onclick = saveKmsAuth;
 $("previewCrawl").onclick = () => startCrawl(true);
 $("startCrawl").onclick = () => startCrawl(false);
+async function startUrlCrawl(dryRun) {
+  const raw = $("urlInput").value;
+  const urls = [...new Set(raw.split(/[;\r\n]+/).map((item) => item.trim()).filter(Boolean))];
+  if (!urls.length) return alert("请至少输入一条 URL");
+  for (const url of urls) {
+    try {
+      const parsed = new URL(url);
+      if (!["http:", "https:"].includes(parsed.protocol)) throw new Error();
+    } catch {
+      return alert(`URL 格式无效：${url}`);
+    }
+  }
+  const source_code = document.querySelector('input[name="urlSource"]:checked')?.value;
+  if (!source_code) return alert("请选择 URL 来源");
+  const sourceName = source_code === "suishenban" ? "随申办" : "企服云";
+  const message = dryRun
+    ? `将预检 ${urls.length} 条${sourceName} URL，不写入本地库或 KMS。确认继续？`
+    : `将抓取 ${urls.length} 条${sourceName} URL 并写入本地待入库列表，不调用 KMS。确认继续？`;
+  if (!confirm(message)) return;
+  try {
+    const v = await json("/api/url-runs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ urls, source_code, dry_run: dryRun, confirm_write: !dryRun }),
+    });
+    watch(v.run_id, false, "url");
+  } catch (e) {
+    alert(e.message);
+  }
+}
+$("previewUrlCrawl").onclick = () => startUrlCrawl(true);
+$("startUrlCrawl").onclick = () => startUrlCrawl(false);
 $("stop").onclick = async () => {
-  if (currentRun)
+  if (currentRun && currentRunTarget === "tasks")
+    try {
+      await json(`/api/runs/${currentRun}/stop`, { method: "POST" });
+    } catch (e) {
+      alert(e.message);
+    }
+};
+$("urlStop").onclick = async () => {
+  if (currentRun && currentRunTarget === "url")
     try {
       await json(`/api/runs/${currentRun}/stop`, { method: "POST" });
     } catch (e) {
@@ -452,6 +511,7 @@ $("nextPage").onclick = () => {
 };
 $("tabTasksBtn").onclick = () => showTab("tasks");
 $("tabArticlesBtn").onclick = () => showTab("articles");
+$("tabUrlsBtn").onclick = () => showTab("urls");
 async function retryRun(id) {
   if (!confirm("将仅重推该批次中 KMS 失败的数据，确认继续？")) return;
   try {
@@ -461,21 +521,21 @@ async function retryRun(id) {
     alert(e.message);
   }
 }
-async function viewRun(id) {
+async function viewRun(id, target = "tasks") {
   try {
     const run = await json(`/api/runs/${id}`);
-    $("runId").textContent = id;
-    stats(run);
+    runElement(target, "runId").textContent = id;
+    stats(run, target);
     const running = run.status === "queued" || run.status === "running";
-    $("stop").disabled = !running;
-    if (running) return watch(id);
+    runElement(target, "stop").disabled = !running;
+    if (running) return watch(id, false, target);
     let text = `批次 ${run.run_id}（${taskLabel(run.trigger_type)} · ${run.dry_run ? "预检" : "正式"} · ${run.status}）\n总数 ${run.total} · 成功 ${run.succeeded} · 跳过 ${run.skipped} · 失败 ${run.failed}\n开始 ${run.started_at || "-"} · 结束 ${run.finished_at || "-"}\n${run.message || ""}\n\n—— 明细（最近 100 条）——`;
     const items = await json(`/api/runs/${id}/items?page=1&size=100`);
     items.items.forEach((it) => {
       text += `\n[${it.phase}] ${it.status} ${esc(it.article_title || it.source_item_id || "")}${it.message ? ` ${esc(it.message)}` : ""}`;
     });
-    $("logs").textContent = text;
-    $("logs").scrollTop = $("logs").scrollHeight;
+    runElement(target, "logs").textContent = text;
+    runElement(target, "logs").scrollTop = runElement(target, "logs").scrollHeight;
   } catch (e) {
     alert(`加载任务失败：${e.message}`);
   }

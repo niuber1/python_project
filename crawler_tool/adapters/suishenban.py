@@ -89,6 +89,8 @@ class SuishenbanAdapter(CrawlerAdapter):
         return []
 
     def fetch(self, candidate: PolicyCandidate) -> PolicyArticle:
+        if candidate.raw.get("url_reference") == "policy":
+            return self._fetch_policy(candidate, candidate.detail_ref, {}, {})
         project_response = self.client.get(
             urljoin(self.api_root, "policy_center/hqPolicy/questions"),
             params={"policyProjectId": candidate.detail_ref},
@@ -99,6 +101,11 @@ class SuishenbanAdapter(CrawlerAdapter):
         policy_id = str(source_policy.get("id") or "").strip()
         if not policy_id:
             raise SourceEmptyError("随申办项目未关联政策原文")
+        return self._fetch_policy(candidate, policy_id, project, candidate.raw)
+
+    def _fetch_policy(self, candidate: PolicyCandidate, policy_id: str | None, project: dict[str, Any], row: dict[str, Any]) -> PolicyArticle:
+        if not policy_id:
+            raise SourceEmptyError("随申办 URL 未识别政策 ID")
         response = self.client.get(
             urljoin(self.api_root, "policy_center/hqPolicy/policyDetail"),
             params={"policyId": policy_id},
@@ -131,7 +138,6 @@ class SuishenbanAdapter(CrawlerAdapter):
             department = None
         if isinstance(department, list):
             department = "、".join(str(x.get("label") or x.get("name") or x) if isinstance(x, dict) else str(x) for x in department)
-        row = candidate.raw
         time_tags = project.get("timeTags") or row.get("timeTags") or []
         main_tag = next((item for item in time_tags if isinstance(item, dict) and item.get("main")), None)
         if main_tag is None:
@@ -141,7 +147,7 @@ class SuishenbanAdapter(CrawlerAdapter):
             source_item_id=candidate.source_item_id,
             source_name="上海一网通办",
             title=str(detail.get("name") or candidate.project_name),
-            project_name=candidate.project_name,
+            project_name=str(project.get("description") or project.get("name") or candidate.project_name),
             policy_level=str(level) if level else None,
             publish_dept=str(department) if department else None,
             document_no=detail.get("code") if str(detail.get("code") or "").strip() not in {"", "/", "-", "无"} else None,

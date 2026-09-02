@@ -19,6 +19,8 @@ class FakeDb:
     def update_run(self, run_id, **values): self.run_updates.append(values)
     def create_run(self, run_id, trigger_type, task_codes, dry_run): self.run_updates.append({"id": run_id, "trigger": trigger_type, "codes": task_codes, "dry_run": dry_run})
     def refresh_existing_article(self, *args): self.refreshed = args
+    def find_existing(self, *args): return {}
+    def find_existing_by_title(self, *args): return False
 
 
 class NeverFetch:
@@ -124,6 +126,28 @@ def test_content_update_disabled_rejects_refresh_and_manual_update():
         manager.start(["qifuyun_declare"], False, refresh_existing=True)
     with pytest.raises(ValueError, match="正文更新功能当前已关闭"):
         manager.update_articles(["article"], False)
+
+
+def test_url_run_only_stores_locally_and_does_not_construct_kms(monkeypatch):
+    import crawler_tool.engine as engine_mod
+    db = FakeDb()
+    manager = RunManager(Settings(_env_file=None), db, EventStore())
+
+    class Adapter:
+        def fetch(self, candidate):
+            return PolicyArticle(
+                source_code="qifuyun", source_item_id=candidate.source_item_id, source_name="源", title="URL 政策",
+                project_name="URL 政策", original_url="https://example.com/policy", raw_content_html="<p>正文</p>",
+            )
+
+    monkeypatch.setattr(manager, "_adapter", lambda task_code, client: Adapter())
+    monkeypatch.setattr(engine_mod, "KmsClient", lambda _: (_ for _ in ()).throw(AssertionError("URL 抓取不得调用 KMS")))
+    manager._stop_flags["url-run"] = threading.Event()
+    manager._active_run = "url-run"
+    manager._execute_url("url-run", "qifuyun_declare", ["https://shpolicy.ssme.sh.gov.cn/knowledge/#/policy?policyId=q-1"], False)
+    assert db.article_results == []
+    assert any(item.get("phase") == "store" and item.get("status") == "success" for item in db.items)
+    assert manager._active_run is None
 
 
 def test_auto_sync_chains_push_run(monkeypatch):

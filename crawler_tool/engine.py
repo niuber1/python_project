@@ -19,6 +19,7 @@ from .html_utils import compose_document_content, content_sha256
 from . import kms_kb
 from .kms_client import KmsClient
 from .models import CrawlerPayload, KmsResult, PolicyArticle, deterministic_document_id
+from .url_inputs import candidate_from_url, normalize_urls
 
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,29 @@ class RunManager:
             self._release(run_id)
             raise
         threading.Thread(target=self._execute, args=(run_id, task_codes, dry_run, phase, auto_sync, refresh_existing), daemon=True, name=f"crawler-{run_id[:8]}").start()
+        return run_id
+
+    def start_url_run(self, urls: list[str], source_code: str, dry_run: bool) -> str:
+        """只抓取输入的来源详情 URL，成功数据进入本地待入库列表。"""
+        normalized_urls = normalize_urls(urls)
+        task_code = f"{source_code}_declare"
+        if task_code not in TASKS:
+            raise ValueError(f"不支持的 URL 来源：{source_code}")
+        with self._guard:
+            if self._active_run:
+                raise RunConflictError(self._active_run)
+            run_id = uuid.uuid4().hex
+            self._active_run = run_id
+            self._stop_flags[run_id] = threading.Event()
+        try:
+            self.db.create_run(run_id, "manual-url", [f"url:{source_code}", *normalized_urls], dry_run)
+        except Exception:
+            self._release(run_id)
+            raise
+        threading.Thread(
+            target=self._execute_url, args=(run_id, task_code, normalized_urls, dry_run),
+            daemon=True, name=f"url-crawler-{run_id[:8]}",
+        ).start()
         return run_id
 
     def retry_failed(self, original_run_id: str) -> str:
@@ -195,6 +219,60 @@ class RunManager:
         finally:
             if kms:
                 kms.close()
+            self._release(run_id)
+
+    def _execute_url(self, run_id: str, task_code: str, urls: list[str], dry_run: bool) -> None:
+        """URL 批次沿用候选处理、去重和台账，不创建 KMS 客户端。"""
+        counts = {"total": len(urls), "processed": 0, "succeeded": 0, "skipped": 0, "failed": 0}
+        stop_flag = self._stop_flags[run_id]
+        task = TASKS[task_code]
+        self.db.update_run(run_id, status="running", started_at=datetime.now(), message="URL 抓取运行中", total=len(urls))
+        self.events.emit(run_id, "status", "开始 URL 抓取", dry_run=dry_run, **counts)
+        try:
+            with httpx.Client(
+                timeout=self.settings.request_timeout_seconds,
+                follow_redirects=True,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130 Safari/537.36",
+                    "Accept": "application/json, text/plain, */*",
+                    "Referer": "https://zwdt.sh.gov.cn/qykj/shell_oc_policy_zq/policy/index?from=zwfw",
+                },
+            ) as client:
+                adapter = self._adapter(task_code, client)
+                seen_titles: set[str] = set()
+                for url in urls:
+                    if stop_flag.is_set():
+                        break
+                    try:
+                        candidate = candidate_from_url(task["source_code"], url)
+                    except ValueError as exc:
+                        item_id = uuid.uuid4().hex
+                        self.db.create_run_item(
+                            run_item_id=item_id, run_id=run_id, task_code=task_code, source_code=task["source_code"],
+                            source_item_id=url, status="failed", phase="validate", message=str(exc), error_detail=str(exc), finished_at=datetime.now(),
+                        )
+                        outcome = "failed"
+                    else:
+                        existing = self.db.find_existing(task["source_code"], [candidate.source_item_id], task["base_id"])
+                        outcome = self._process_candidate(
+                            run_id, task_code, task, candidate, existing.get(candidate.source_item_id), dry_run,
+                            adapter, None, push_kms=False, seen_titles=seen_titles,
+                        )
+                    counts["processed"] += 1
+                    counts[outcome] += 1
+                    self.db.update_run(run_id, **counts, current_item=url)
+                    self.events.emit(run_id, "progress", url, **counts)
+                    if self.settings.item_delay_seconds:
+                        time.sleep(self.settings.item_delay_seconds)
+            status = "stopped" if stop_flag.is_set() else "completed"
+            message = "URL 抓取已停止" if status == "stopped" else "URL 抓取完成；成功记录已进入待入库"
+            self.db.update_run(run_id, status=status, finished_at=datetime.now(), message=message, **counts)
+            self.events.emit(run_id, "complete", message, status=status, **counts)
+        except Exception as exc:
+            logger.exception("run_id=%s URL task failed", run_id)
+            self.db.update_run(run_id, status="failed", finished_at=datetime.now(), message=_error_summary(exc), **counts)
+            self.events.emit(run_id, "error", _error_summary(exc), **counts)
+        finally:
             self._release(run_id)
 
     def _start_auto_push(self, crawl_run_id: str) -> str | None:

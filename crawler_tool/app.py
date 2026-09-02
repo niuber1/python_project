@@ -21,7 +21,7 @@ from .engine import RunConflictError, RunManager
 from .events import EventStore
 from . import kms_kb
 from .logging_config import configure_logging
-from .models import KmsAuthConfigRequest, PushArticlesRequest, StartRunRequest, UpdateArticlesRequest
+from .models import KmsAuthConfigRequest, PushArticlesRequest, StartRunRequest, UpdateArticlesRequest, UrlRunRequest
 
 
 settings = get_settings()
@@ -229,6 +229,19 @@ def start_run(body: StartRunRequest):
         raise HTTPException(400, "正式执行必须设置 confirm_write=true")
     try:
         run_id = manager.start(body.task_codes, body.dry_run, phase=body.phase, auto_sync=body.auto_sync, refresh_existing=body.refresh_existing)
+    except RunConflictError as exc:
+        raise HTTPException(409, {"message": "已有任务运行中", "active_run": str(exc)}) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"run_id": run_id, "status": "queued"}
+
+
+@app.post("/api/url-runs", status_code=202)
+def start_url_run(body: UrlRunRequest):
+    if not body.dry_run and not body.confirm_write:
+        raise HTTPException(400, "正式 URL 抓取必须设置 confirm_write=true")
+    try:
+        run_id = manager.start_url_run(body.urls, body.source_code, body.dry_run)
     except RunConflictError as exc:
         raise HTTPException(409, {"message": "已有任务运行中", "active_run": str(exc)}) from exc
     except ValueError as exc:
