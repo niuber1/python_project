@@ -32,6 +32,25 @@ class FakeKms:
     def close(self): pass
 
 
+def test_payload_includes_policy_header_fields_in_kms_metadata():
+    from datetime import date
+
+    article = PolicyArticle(
+        source_code="suishenban", source_item_id="shanghai-gwk:test", source_name="上海一网通办",
+        title="政策标题", project_name="政策标题", original_url="https://example.com/policy",
+        publish_date=date(2023, 5, 19), document_no="奉人社〔2023〕9号", publish_dept="奉人社",
+        raw_content_html="<p>纯正文</p>",
+    )
+    payload = RunManager._payload(article, "<p>纯正文</p>", "base")
+    assert payload.publish_date == "2023-05-19" and payload.document_no == "奉人社〔2023〕9号"
+    assert payload.metadata["标题"] == "政策标题"
+    assert payload.metadata["印发日期"] == "2023-05-19"
+    assert payload.metadata["发布日期"] == "2023-05-19"
+    assert payload.metadata["发文日期"] == "2023-05-19"
+    assert payload.metadata["文号"] == "奉人社〔2023〕9号"
+    assert payload.metadata["发文文号"] == "奉人社〔2023〕9号"
+
+
 def test_existing_failed_article_only_repushes_saved_payload():
     db=FakeDb(); manager=RunManager(Settings(_env_file=None),db,EventStore())
     saved={"id":"c"*32,"bt":"标题","url":"https://example.com","content":"<p>正文</p>","source":"来源","baseId":"base"}

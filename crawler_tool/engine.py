@@ -128,19 +128,31 @@ class RunManager:
 
     @staticmethod
     def _payload(article: PolicyArticle, content: str, base_id: str) -> CrawlerPayload:
+        publish_date = article.publish_date.isoformat() if article.publish_date else ""
+        document_no = article.document_no or ""
         metadata = {
+            # crawlerToBase 顶层字段（pubDate / wh）用于兼容接口；KMS 知识库
+            # 的属性面板则仅写入 metadata。两处同时传递，避免页面已有信息
+            # 在入库后的“发文日期/文号”等属性中丢失。
+            "标题": article.title,
             "项目名称": article.project_name,
+            "印发日期": publish_date,
+            "发布日期": publish_date,
+            "发文日期": publish_date,
+            "文号": document_no,
+            "发文文号": document_no,
             "政策层级": article.policy_level or "",
             "发文部门": article.publish_dept or "",
             "申报开始时间": article.apply_start.isoformat() if article.apply_start else "",
             "申报结束时间": article.apply_end.isoformat() if article.apply_end else "",
             "文档来源": article.source_name,
+            "原文链接": article.original_url,
         }
         return CrawlerPayload(
             id=deterministic_document_id(article.source_code, article.source_item_id, base_id),
             bt=article.title, url=article.original_url,
-            pubDate=article.publish_date.isoformat() if article.publish_date else None,
-            wh=article.document_no, content=content, source=article.source_name,
+            pubDate=publish_date or None,
+            wh=document_no or None, content=content, source=article.source_name,
             baseId=base_id, metadata=metadata,
         )
 
