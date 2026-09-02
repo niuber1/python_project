@@ -4,7 +4,7 @@ from typing import Any
 from urllib.parse import urljoin
 
 from .base import AdapterError, CrawlerAdapter, SourceEmptyError
-from ..html_utils import decode_possible_base64_html, is_shanghai_district, parse_date
+from ..html_utils import decode_possible_base64_html, is_shanghai_district, parse_date, parse_shanghai_government_page
 from ..models import Attachment, PolicyArticle, PolicyCandidate
 
 
@@ -89,6 +89,8 @@ class SuishenbanAdapter(CrawlerAdapter):
         return []
 
     def fetch(self, candidate: PolicyCandidate) -> PolicyArticle:
+        if candidate.raw.get("url_reference") == "shanghai_government":
+            return self._fetch_shanghai_government_page(candidate)
         if candidate.raw.get("url_reference") == "policy":
             return self._fetch_policy(candidate, candidate.detail_ref, {}, {})
         project_response = self.client.get(
@@ -102,6 +104,30 @@ class SuishenbanAdapter(CrawlerAdapter):
         if not policy_id:
             raise SourceEmptyError("随申办项目未关联政策原文")
         return self._fetch_policy(candidate, policy_id, project, candidate.raw)
+
+    def _fetch_shanghai_government_page(self, candidate: PolicyCandidate) -> PolicyArticle:
+        if not candidate.original_url:
+            raise SourceEmptyError("上海一网通办公文 URL 为空")
+        response = self.client.get(candidate.original_url)
+        response.raise_for_status()
+        parsed = parse_shanghai_government_page(response.text)
+        if not parsed["title"]:
+            raise SourceEmptyError("上海一网通办公文标题为空")
+        if not parsed["content_html"].strip():
+            raise SourceEmptyError("上海一网通办公文正文为空")
+        return PolicyArticle(
+            source_code=self.source_code,
+            source_item_id=candidate.source_item_id,
+            source_name="上海一网通办",
+            title=parsed["title"],
+            project_name=parsed["title"],
+            publish_dept=parsed["publish_dept"] or None,
+            document_no=parsed["document_no"] or None,
+            publish_date=parsed["publish_date"],
+            original_url=candidate.original_url,
+            raw_content_html=parsed["content_html"],
+            raw={"url_input": candidate.original_url, "page_type": "shanghai_government"},
+        )
 
     def _fetch_policy(self, candidate: PolicyCandidate, policy_id: str | None, project: dict[str, Any], row: dict[str, Any]) -> PolicyArticle:
         if not policy_id:

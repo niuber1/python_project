@@ -30,3 +30,10 @@ def test_candidate_from_url_recognizes_suishenban_direct_policy_and_reports_miss
         candidate_from_url("https://shpolicy.ssme.sh.gov.cn/knowledge/")
     with pytest.raises(ValueError, match="域名"):
         source_from_url("https://example.com/?policyId=1")
+
+
+def test_candidate_from_url_recognizes_shanghai_government_as_suishenban():
+    candidate = candidate_from_url("https://www.shanghai.gov.cn/gwk/search/content/0084i20150609-tpkupq5lukk0riylhb")
+    assert candidate.source_code == "suishenban"
+    assert candidate.source_item_id == "shanghai-gwk:0084i20150609-tpkupq5lukk0riylhb"
+    assert candidate.raw["url_reference"] == "shanghai_government"

@@ -154,6 +154,7 @@ def parse_shanghai_government_page(page_html: str) -> dict[str, Any]:
         "title": title,
         "publish_date": publish_date,
         "document_no": document_no,
+        "publish_dept": agency,
         "content_html": content.decode_contents() if content else "",
     }
 

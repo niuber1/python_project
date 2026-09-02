@@ -65,6 +65,7 @@ def test_shanghai_government_page_keeps_only_ivs_content_and_extracts_metadata()
     assert parsed["title"] == "奉贤区使用地方教育附加专项资金开展职工职业培训工作的实施办法"
     assert parsed["publish_date"] == date(2023, 5, 19)
     assert parsed["document_no"] == "奉人社〔2023〕9号"
+    assert parsed["publish_dept"] == "奉人社"
     content = normalize_article_html(article(raw_content_html=parsed["content_html"]))
     assert "页面标题和日期区域" not in content and "这是政策正文" in content
     assert '<img src="https://example.com/body.png"' in content
