@@ -77,6 +77,43 @@ def title_exists_in_base(settings: Settings, title: str, base_id: str) -> bool:
         return False
 
 
+def titles_in_base(settings: Settings, base_id: str) -> set[str] | None:
+    """一次性读取指定知识库的有效标题，供单次抓取批次在内存中去重。
+
+    返回 ``None`` 表示 KMS 查询不可用；调用方应保守放行，避免因查重故障阻断抓取。
+    """
+    if not base_id:
+        return set()
+    try:
+        connection = pymysql.connect(
+            host=settings.db_host,
+            port=settings.db_port,
+            user=settings.db_user,
+            password=settings.db_password,
+            database=settings.kms_db_name,
+            charset="utf8mb4",
+            cursorclass=pymysql.cursors.SSCursor,
+            connect_timeout=10,
+            read_timeout=60,
+            write_timeout=15,
+        )
+        try:
+            titles: set[str] = set()
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT DISTINCT g_objectname FROM kms_hub_document "
+                    "WHERE ds_deleted='0' AND kms_hub_base_id=%s AND g_objectname IS NOT NULL",
+                    (base_id,),
+                )
+                while rows := cursor.fetchmany(1000):
+                    titles.update(str(row[0]).strip() for row in rows if row and str(row[0]).strip())
+            return titles
+        finally:
+            connection.close()
+    except Exception:
+        return None
+
+
 def existing_titles(settings: Settings, titles: list[str]) -> set[str]:
     """返回 KMS 中仍有效的同名文档标题，用于修复本地历史状态。
 

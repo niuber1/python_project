@@ -59,6 +59,7 @@
           数据处理 <span id="pendingBadge" class="count-badge"></span>
         </button>
         <button class="tab" id="tabUrlsBtn">URL 抓取</button>
+        <button class="tab" id="tabScheduleBtn">定时抓取设置</button>
       </nav>
 
       <section id="panelTasks">
@@ -176,6 +177,29 @@
         </section>
       </section>
 
+      <section id="panelSchedule" style="display: none">
+        <section class="card schedule-card">
+          <div class="section-heading row">
+            <div>
+              <p class="eyebrow">SCHEDULE</p>
+              <h2>定时抓取设置</h2>
+              <p class="hint">定时任务仅抓取并保存到本地台账，不会自动入库知识库。</p>
+            </div>
+            <span id="scheduleNextRun" class="hint">加载中…</span>
+          </div>
+          <div class="schedule-controls">
+            <label><input id="scheduleEnabled" type="checkbox" /> 启用每日定时抓取</label>
+            <label>执行时间 <input id="scheduleTime" type="time" /></label>
+          </div>
+          <p class="hint">选择定时执行的抓取任务：</p>
+          <div id="scheduleTasks" class="tasks schedule-tasks"></div>
+          <div class="actions">
+            <button id="saveSchedule" class="secondary">保存定时设置</button>
+            <span id="scheduleMessage" class="hint"></span>
+          </div>
+        </section>
+      </section>
+
       <section id="panelArticles" style="display: none">
         <section class="card">
           <div class="section-heading">
@@ -199,6 +223,15 @@
               ><button class="opt on" data-source="">全部来源</button
               ><button class="opt" data-source="suishenban">随申办</button
               ><button class="opt" data-source="qifuyun">企服云</button></span
+            ><span class="group" id="typeFilter"
+              ><button class="opt on" data-policy-type="">全部类型</button
+              ><button class="opt" data-policy-type="declare">申报类</button
+              ><button class="opt" data-policy-type="non_declare">非申报类</button></span
+            ><span class="group" id="syncStatusFilter"
+              ><button class="opt on" data-sync-status="">全部状态</button
+              ><button class="opt" data-sync-status="pending">待入库</button
+              ><button class="opt" data-sync-status="success">已同步</button
+              ><button class="opt" data-sync-status="failed">同步失败</button></span
             ><input
               id="keyword"
               type="search"
@@ -223,6 +256,7 @@
                   </th>
                   <th>标题</th>
                   <th>来源</th>
+                  <th>政策类型</th>
                   <th>发文日期</th>
                   <th>抓取时间</th>
                   <th>申报起止</th>
@@ -235,7 +269,15 @@
             </table>
           </div>
           <div class="pager">
-            <span id="pageInfo">共 0 条</span
+            <label class="page-size">每页
+              <select id="pageSize" aria-label="每页显示条数">
+                <option value="20" selected>20</option>
+                <option value="35">35</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+              条
+            </label><span id="pageInfo">共 0 条</span
             ><button class="secondary" id="prevPage" disabled>上一页</button
             ><span id="pageNo">1 / 1</span
             ><button class="secondary" id="nextPage" disabled>下一页</button>

@@ -8,7 +8,7 @@ from typing import Any, Iterator
 import pymysql
 from pymysql.cursors import DictCursor
 
-from .config import Settings
+from .config import NON_DECLARE_BASE_ID, TARGET_BASE_ID, Settings, policy_type_for_base, policy_type_name
 from .html_utils import content_sha256
 from .models import CrawlerPayload, KmsResult, PolicyArticle
 
@@ -51,7 +51,7 @@ class Database:
                     (self.settings.db_name,),
                 )
                 count = cursor.fetchone()["cnt"]
-            return {"ok": count == 3, "tables": count, "message": "ok" if count == 3 else "请先执行 sql/001_init.sql"}
+            return {"ok": count >= 4, "tables": count, "message": "ok" if count >= 4 else "请先执行 sql/001_init.sql 和 sql/002_schedule_config.sql"}
         except Exception as exc:
             return {"ok": False, "tables": 0, "message": str(exc)}
 
@@ -90,6 +90,28 @@ class Database:
             rows = cursor.fetchall()
         return [self._run_row(row) for row in rows]
 
+    def get_schedule_config(self) -> dict[str, Any] | None:
+        with self.connection() as conn, conn.cursor() as cursor:
+            cursor.execute("SELECT enabled, schedule_hour, schedule_minute, task_codes_json, updated_at FROM policy_crawler_schedule_config WHERE config_id=1")
+            row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "enabled": bool(row["enabled"]), "hour": int(row["schedule_hour"]),
+            "minute": int(row["schedule_minute"]), "task_codes": json.loads(row["task_codes_json"] or "[]"),
+            "updated_at": row["updated_at"],
+        }
+
+    def save_schedule_config(self, enabled: bool, hour: int, minute: int, task_codes: list[str]) -> dict[str, Any]:
+        with self.connection() as conn, conn.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO policy_crawler_schedule_config (config_id,enabled,schedule_hour,schedule_minute,task_codes_json,updated_at) "
+                "VALUES (1,%s,%s,%s,%s,NOW()) ON DUPLICATE KEY UPDATE enabled=VALUES(enabled),schedule_hour=VALUES(schedule_hour),schedule_minute=VALUES(schedule_minute),task_codes_json=VALUES(task_codes_json),updated_at=NOW()",
+                (int(enabled), hour, minute, _json(task_codes)),
+            )
+            conn.commit()
+        return self.get_schedule_config() or {"enabled": enabled, "hour": hour, "minute": minute, "task_codes": task_codes}
+
     @staticmethod
     def _run_row(row: dict[str, Any]) -> dict[str, Any]:
         row = dict(row)
@@ -113,9 +135,9 @@ class Database:
                 result.update({row["source_item_id"]: row for row in cursor.fetchall()})
         return result
 
-    def find_existing_by_title(self, title: str) -> bool:
+    def find_existing_by_title(self, title: str, base_id: str) -> bool:
         with self.connection() as conn, conn.cursor() as cursor:
-            cursor.execute("SELECT 1 FROM policy_crawler_article WHERE title=%s LIMIT 1", (title,))
+            cursor.execute("SELECT 1 FROM policy_crawler_article WHERE title=%s AND base_id=%s LIMIT 1", (title, base_id))
             return cursor.fetchone() is not None
 
     def list_run_article_ids(self, run_id: str) -> list[str]:
@@ -281,6 +303,7 @@ class Database:
         source_code: str | None = None,
         keyword: str | None = None,
         update_status: str | None = None,
+        policy_type: str | None = None,
     ) -> dict[str, Any]:
         where, params = [], []
         if status:
@@ -295,18 +318,25 @@ class Database:
         if update_status:
             where.append("content_update_status=%s")
             params.append(update_status)
+        type_base_ids = {"declare": TARGET_BASE_ID, "non_declare": NON_DECLARE_BASE_ID}
+        if policy_type in type_base_ids:
+            where.append("base_id=%s")
+            params.append(type_base_ids[policy_type])
         clause = ("WHERE " + " AND ".join(where)) if where else ""
         with self.connection() as conn, conn.cursor() as cursor:
             cursor.execute(f"SELECT COUNT(*) AS cnt FROM policy_crawler_article {clause}", params)
             total = int(cursor.fetchone()["cnt"])
             cursor.execute(
-                f"SELECT policy_crawler_article_id, source_code, source_name, source_item_id, title, project_name, "
+                f"SELECT policy_crawler_article_id, source_code, source_name, source_item_id, base_id, title, project_name, "
                 f"crawl_status, kms_status, kms_result_code, last_error, content_update_status, content_update_error, content_updated_at, "
                 f"crawled_at, pushed_at, publish_date, apply_start, apply_end "
                 f"FROM policy_crawler_article {clause} ORDER BY crawled_at DESC, created_at DESC LIMIT %s OFFSET %s",
                 (*params, size, (page - 1) * size),
             )
             items = cursor.fetchall()
+        for item in items:
+            item["policy_type"] = policy_type_for_base(item["base_id"])
+            item["policy_type_name"] = policy_type_name(item["policy_type"])
         return {"total": total, "page": page, "size": size, "items": items}
 
     def get_articles_by_ids(self, article_ids: list[str]) -> list[dict[str, Any]]:

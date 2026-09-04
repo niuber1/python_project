@@ -51,6 +51,22 @@ def test_payload_includes_policy_header_fields_in_kms_metadata():
     assert payload.metadata["发文文号"] == "奉人社〔2023〕9号"
 
 
+def test_non_declare_task_uses_its_own_base_and_suishenban_filter():
+    import httpx
+
+    db = FakeDb()
+    manager = RunManager(Settings(_env_file=None), db, EventStore())
+    adapter = manager._adapter("suishenban_non_declare", httpx.Client())
+    assert adapter.free_enjoy is True
+    article = PolicyArticle(
+        source_code="suishenban", source_item_id="policy-1", source_name="上海一网通办",
+        title="非申报政策", project_name="非申报政策", original_url="https://example.com/policy",
+        raw_content_html="<p>正文</p>",
+    )
+    payload = manager._payload(article, "<p>正文</p>", TASKS["suishenban_non_declare"]["base_id"])
+    assert payload.base_id == "c24a793eec08458f873d263a090361d0"
+
+
 def test_existing_failed_article_only_repushes_saved_payload():
     db=FakeDb(); manager=RunManager(Settings(_env_file=None),db,EventStore())
     saved={"id":"c"*32,"bt":"标题","url":"https://example.com","content":"<p>正文</p>","source":"来源","baseId":"base"}
@@ -137,6 +153,15 @@ def test_start_run_request_phase_validation():
     assert StartRunRequest(task_codes=[], refresh_existing=True).refresh_existing
     with pytest.raises(ValidationError):
         StartRunRequest(task_codes=[], phase="bogus")
+
+
+def test_schedule_config_request_validates_daily_time():
+    from crawler_tool.models import ScheduleConfigRequest
+
+    value = ScheduleConfigRequest(enabled=True, hour=1, minute=30, task_codes=["suishenban_non_declare"])
+    assert value.hour == 1 and value.task_codes == ["suishenban_non_declare"]
+    with pytest.raises(ValidationError):
+        ScheduleConfigRequest(hour=24, minute=0)
 
 
 def test_content_update_disabled_rejects_refresh_and_manual_update():
@@ -261,7 +286,7 @@ def test_push_articles_request_validation():
 
 def test_crawl_skips_duplicate_title_within_batch():
     db = FakeDb()
-    db.find_existing_by_title = lambda title: False
+    db.find_existing_by_title = lambda title, base_id: False
     manager = RunManager(Settings(_env_file=None), db, EventStore())
     candidate = PolicyCandidate(source_code="qifuyun", source_item_id="q1", project_name="项目", detail_ref="q1")
     class FakeAdapter:
@@ -275,7 +300,7 @@ def test_crawl_skips_duplicate_title_within_batch():
 
 def test_crawl_skips_title_already_in_db():
     db = FakeDb()
-    db.find_existing_by_title = lambda title: True
+    db.find_existing_by_title = lambda title, base_id: True
     manager = RunManager(Settings(_env_file=None), db, EventStore())
     candidate = PolicyCandidate(source_code="qifuyun", source_item_id="q1", project_name="项目", detail_ref="q1")
     class FakeAdapter:
@@ -283,6 +308,28 @@ def test_crawl_skips_title_already_in_db():
             return PolicyArticle(source_code="qifuyun", source_item_id="q1", source_name="源", title="已存在标题", project_name="项目", original_url="https://example.com", raw_content_html="<p>正文</p>")
     outcome = manager._process_candidate("run", "qifuyun_declare", TASKS["qifuyun_declare"], candidate, None, False, FakeAdapter(), None, push_kms=False, seen_titles=set())
     assert outcome == "skipped"
+
+
+def test_crawl_skips_title_preloaded_from_kms_without_inserting_locally():
+    db = FakeDb()
+    db.find_existing_by_title = lambda title, base_id: False
+    db.insert_article = lambda *args, **kwargs: pytest.fail("KMS 已有标题不应写入本地台账")
+    manager = RunManager(Settings(_env_file=None), db, EventStore())
+    candidate = PolicyCandidate(source_code="suishenban", source_item_id="s1", project_name="项目", detail_ref="s1")
+
+    class FakeAdapter:
+        def fetch(self, _):
+            return PolicyArticle(
+                source_code="suishenban", source_item_id="s1", source_name="源", title="KMS 已有政策",
+                project_name="项目", original_url="https://example.com", raw_content_html="<p>正文</p>",
+            )
+
+    outcome = manager._process_candidate(
+        "run", "suishenban_non_declare", TASKS["suishenban_non_declare"], candidate, None,
+        False, FakeAdapter(), None, push_kms=False, seen_titles=set(), kms_titles={"KMS 已有政策"},
+    )
+    assert outcome == "skipped"
+    assert any(item.get("message") == "KMS 知识库已存在同标题，跳过" for item in db.items)
 
 
 def test_event_store_replays_after_last_event_id():

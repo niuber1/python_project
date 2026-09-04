@@ -6,10 +6,13 @@ let currentRunTarget = "tasks";
 let articlePage = 1,
   articleSize = 20,
   articleSource = "",
+  articlePolicyType = "",
+  articleSyncStatus = "",
   articleTotal = 0,
   dataView = "pending",
   selectedArticles = new Set();
 let contentUpdateEnabled = false;
+let scheduleDirty = false;
 const $ = (id) => document.getElementById(id);
 const esc = (s) =>
   String(s ?? "").replace(
@@ -100,7 +103,7 @@ async function load() {
       selectedTasks === null
         ? new Set(v.tasks.map((t) => t.code))
         : new Set(
-            [...document.querySelectorAll(".task input:checked")].map(
+            [...document.querySelectorAll("#tasks input:checked")].map(
               (x) => x.value,
             ),
           );
@@ -111,6 +114,7 @@ async function load() {
           `<label class="task"><input type="checkbox" value="${esc(t.code)}"${checked.has(t.code) ? " checked" : ""}><b>${esc(t.name)}</b><small>${esc(t.rule)}</small></label>`,
       )
       .join("");
+    loadSchedule(v.tasks);
     $("pendingBadge").textContent = v.pending_count
       ? `${v.pending_count} 条待入库`
       : "";
@@ -128,6 +132,60 @@ async function load() {
       .join("") || '<tr><td colspan="6" class="muted">暂无 URL 抓取记录</td></tr>';
   } catch (e) {
     log(`加载失败：${e.message}`);
+  }
+}
+function setScheduleControlsDisabled() {
+  const disabled = !$("scheduleEnabled").checked;
+  $("scheduleTime").disabled = disabled;
+  document.querySelectorAll("#scheduleTasks input").forEach((box) => (box.disabled = disabled));
+}
+async function loadSchedule(tasks) {
+  if (scheduleDirty) return;
+  try {
+    const v = await json("/api/schedule");
+    $("scheduleEnabled").checked = !!v.enabled;
+    $("scheduleTime").value = `${String(v.hour).padStart(2, "0")}:${String(v.minute).padStart(2, "0")}`;
+    const selected = new Set(v.task_codes || []);
+    $("scheduleTasks").innerHTML = tasks.map((t) =>
+      `<label class="task"><input type="checkbox" value="${esc(t.code)}"${selected.has(t.code) ? " checked" : ""}><b>${esc(t.name)}</b><small>${esc(t.rule)}</small></label>`,
+    ).join("");
+    $("scheduleNextRun").textContent = v.enabled && v.next_run_time
+      ? `下次执行：${String(v.next_run_time).replace("T", " ").slice(0, 16)}`
+      : "当前已停用";
+    setScheduleControlsDisabled();
+  } catch (e) {
+    $("scheduleNextRun").textContent = "定时配置加载失败";
+    $("scheduleMessage").textContent = e.message;
+  }
+}
+async function saveSchedule() {
+  const [hour, minute] = $("scheduleTime").value.split(":").map(Number);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) {
+    $("scheduleMessage").textContent = "请选择有效的执行时间";
+    return;
+  }
+  const enabled = $("scheduleEnabled").checked;
+  const task_codes = [...document.querySelectorAll("#scheduleTasks input:checked")].map((box) => box.value);
+  if (enabled && !task_codes.length) {
+    $("scheduleMessage").textContent = "启用定时抓取时至少选择一个任务";
+    return;
+  }
+  const button = $("saveSchedule");
+  button.disabled = true;
+  try {
+    const v = await json("/api/schedule", {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled, hour, minute, task_codes }),
+    });
+    scheduleDirty = false;
+    $("scheduleMessage").textContent = "定时设置已保存并立即生效";
+    $("scheduleNextRun").textContent = v.enabled && v.next_run_time
+      ? `下次执行：${String(v.next_run_time).replace("T", " ").slice(0, 16)}`
+      : "当前已停用";
+  } catch (e) {
+    $("scheduleMessage").textContent = `保存失败：${e.message}`;
+  } finally {
+    button.disabled = false;
   }
 }
 async function checkHealth() {
@@ -230,24 +288,34 @@ async function testKmsAuth() {
   }
 }
 function viewQuery() {
-  if (!contentUpdateEnabled) return dataView === "pending" ? { status: "pending" } : {};
+  if (!contentUpdateEnabled)
+    return dataView === "pending"
+      ? { status: "pending" }
+      : articleSyncStatus
+        ? { status: articleSyncStatus }
+        : {};
   if (dataView === "pending") return { status: "pending" };
   if (dataView === "update") return { update_status: "pending" };
   if (dataView === "updateFailed") return { update_status: "failed" };
-  return {};
+  return articleSyncStatus ? { status: articleSyncStatus } : {};
 }
 function updateActionControls() {
   const n = selectedArticles.size,
-    actionable = dataView !== "all",
+    retryingFailed = dataView === "all",
+    hasSelectableRows = [...document.querySelectorAll(".row-check:not(:disabled)")].length > 0,
+    actionable = dataView !== "all" || n > 0,
     isUpdate = contentUpdateEnabled && (dataView === "update" || dataView === "updateFailed");
   $("selectionHint").textContent = actionable
     ? n
       ? `已选择 ${n} 条记录`
       : `请选择需要${isUpdate ? "更新正文" : "入库"}的记录`
-    : "“全部记录”仅用于查询；请切换到待入库后执行操作。";
+    : retryingFailed
+      ? "“全部记录”中仅同步失败的数据可勾选并再次入库。"
+      : "请切换到待入库后执行操作。";
   $("previewSelected").disabled = !actionable || n === 0;
   $("executeSelected").disabled = !actionable || n === 0;
-  $("checkVisible").disabled = !actionable;
+  $("checkVisible").disabled = dataView === "all" ? !hasSelectableRows : !actionable;
+  $("checkAll").disabled = !hasSelectableRows;
   $("previewSelected").textContent = isUpdate ? "预检匹配" : "预检入库";
   $("executeSelected").textContent = isUpdate ? "覆盖更新正文" : "保存到知识库";
 }
@@ -266,6 +334,7 @@ async function loadArticles() {
       params = new URLSearchParams({ page: articlePage, size: articleSize });
     Object.entries(q).forEach(([k, v]) => params.set(k, v));
     if (articleSource) params.set("source_code", articleSource);
+    if (articlePolicyType) params.set("policy_type", articlePolicyType);
     const keyword = $("keyword").value.trim();
     if (keyword) params.set("keyword", keyword);
     const [v, c] = await Promise.all([
@@ -304,10 +373,11 @@ async function loadArticles() {
               a.apply_start && a.apply_end
                 ? `${String(a.apply_start).slice(5)} ~ ${String(a.apply_end).slice(5)}`
                 : fmt(a.apply_start) || fmt(a.apply_end) || "-";
-          return `<tr><td><input type="checkbox" class="row-check" value="${esc(a.policy_crawler_article_id)}"${selectedArticles.has(a.policy_crawler_article_id) ? " checked" : ""}${dataView === "all" ? " disabled" : ""}></td><td class="title" title="${esc(a.title)}">${esc(a.title)}</td><td>${a.source_code === "qifuyun" ? "企服云" : "随申办"}</td><td>${esc(a.publish_date || "-")}</td><td>${esc(fmt(a.crawled_at))}</td><td>${esc(apply)}</td><td>${sync}</td><td data-content-update${contentUpdateEnabled ? "" : " hidden"}>${update}</td><td>${esc(fmt(a.pushed_at) || "-")}</td></tr>`;
+          const selectable = dataView !== "all" || a.kms_status === "failed";
+          return `<tr><td><input type="checkbox" class="row-check" value="${esc(a.policy_crawler_article_id)}"${selectedArticles.has(a.policy_crawler_article_id) ? " checked" : ""}${selectable ? "" : " disabled"}></td><td class="title" title="${esc(a.title)}">${esc(a.title)}</td><td>${a.source_code === "qifuyun" ? "企服云" : "随申办"}</td><td>${esc(a.policy_type_name || "其他")}</td><td>${esc(a.publish_date || "-")}</td><td>${esc(fmt(a.crawled_at))}</td><td>${esc(apply)}</td><td>${sync}</td><td data-content-update${contentUpdateEnabled ? "" : " hidden"}>${update}</td><td>${esc(fmt(a.pushed_at) || "-")}</td></tr>`;
         })
         .join("") ||
-      '<tr><td colspan="9" class="muted">暂无符合条件的数据</td></tr>';
+      '<tr><td colspan="10" class="muted">暂无符合条件的数据</td></tr>';
     const pages = Math.max(1, Math.ceil(v.total / articleSize));
     $("pageInfo").textContent = `共 ${v.total} 条`;
     $("pageNo").textContent = `${articlePage} / ${pages}`;
@@ -315,8 +385,8 @@ async function loadArticles() {
     $("nextPage").disabled = articlePage >= pages;
     $("checkAll").checked =
       v.items.length > 0 &&
-      dataView !== "all" &&
-      [...document.querySelectorAll(".row-check")].every((x) => x.checked);
+      [...document.querySelectorAll(".row-check:not(:disabled)")].length > 0 &&
+      [...document.querySelectorAll(".row-check:not(:disabled)")].every((x) => x.checked);
     syncContentUpdateVisibility();
     updateActionControls();
   } catch (e) {
@@ -324,7 +394,7 @@ async function loadArticles() {
   }
 }
 async function startCrawl(dryRun) {
-  const codes = [...document.querySelectorAll(".task input:checked")].map(
+  const codes = [...document.querySelectorAll("#tasks input:checked")].map(
     (x) => x.value,
   );
   if (!codes.length) return alert("请至少选择一个抓取来源");
@@ -386,12 +456,15 @@ async function processSelected(dryRun) {
 function showTab(name) {
   const tasks = name === "tasks";
   const urls = name === "urls";
+  const schedule = name === "schedule";
   $("panelTasks").style.display = tasks ? "" : "none";
   $("panelUrls").style.display = urls ? "" : "none";
+  $("panelSchedule").style.display = schedule ? "" : "none";
   $("panelArticles").style.display = name === "articles" ? "" : "none";
   $("tabTasksBtn").classList.toggle("active", tasks);
   $("tabArticlesBtn").classList.toggle("active", name === "articles");
   $("tabUrlsBtn").classList.toggle("active", urls);
+  $("tabScheduleBtn").classList.toggle("active", schedule);
   if (name === "articles") loadArticles();
 }
 $("testKmsAuth").onclick = testKmsAuth;
@@ -446,7 +519,7 @@ $("urlStop").onclick = async () => {
 $("previewSelected").onclick = () => processSelected(true);
 $("executeSelected").onclick = () => processSelected(false);
 $("checkVisible").onclick = () => {
-  document.querySelectorAll(".row-check:not(:checked)").forEach((x) => {
+  document.querySelectorAll(".row-check:not(:disabled):not(:checked)").forEach((x) => {
     x.checked = true;
     selectedArticles.add(x.value);
   });
@@ -462,7 +535,7 @@ $("articlesBody").addEventListener("change", (e) => {
   updateActionControls();
 });
 $("checkAll").onchange = (e) => {
-  document.querySelectorAll(".row-check").forEach((x) => {
+  document.querySelectorAll(".row-check:not(:disabled)").forEach((x) => {
     x.checked = e.target.checked;
     e.target.checked
       ? selectedArticles.add(x.value)
@@ -484,6 +557,33 @@ $("sourceFilter").onclick = (e) => {
   );
   loadArticles();
 };
+$("typeFilter").onclick = (e) => {
+  const button = e.target.closest(".opt");
+  if (!button) return;
+  articlePolicyType = button.dataset.policyType || "";
+  articlePage = 1;
+  [...$("typeFilter").children].forEach((x) => x.classList.toggle("on", x === button));
+  loadArticles();
+};
+$("syncStatusFilter").onclick = (e) => {
+  const button = e.target.closest(".opt");
+  if (!button) return;
+  if (dataView !== "all") {
+    dataView = "all";
+    selectedArticles.clear();
+    [...$("dataTabs").children].forEach((x) =>
+      x.classList.toggle("active", x.dataset.view === "all"),
+    );
+  }
+  articleSyncStatus = button.dataset.syncStatus || "";
+  articlePage = 1;
+  [...$("syncStatusFilter").children].forEach((x) => x.classList.toggle("on", x === button));
+  loadArticles();
+};
+$("scheduleEnabled").onchange = () => { scheduleDirty = true; setScheduleControlsDisabled(); };
+$("scheduleTime").onchange = () => { scheduleDirty = true; };
+$("scheduleTasks").onchange = () => { scheduleDirty = true; };
+$("saveSchedule").onclick = saveSchedule;
 $("keyword").onkeydown = (e) => {
   if (e.key === "Enter") {
     articlePage = 1;
@@ -491,6 +591,11 @@ $("keyword").onkeydown = (e) => {
   }
 };
 $("refreshArticles").onclick = () => {
+  articlePage = 1;
+  loadArticles();
+};
+$("pageSize").onchange = (e) => {
+  articleSize = Number(e.target.value);
   articlePage = 1;
   loadArticles();
 };
@@ -509,6 +614,7 @@ $("nextPage").onclick = () => {
 $("tabTasksBtn").onclick = () => showTab("tasks");
 $("tabArticlesBtn").onclick = () => showTab("articles");
 $("tabUrlsBtn").onclick = () => showTab("urls");
+$("tabScheduleBtn").onclick = () => showTab("schedule");
 async function retryRun(id) {
   if (!confirm("将仅重推该批次中 KMS 失败的数据，确认继续？")) return;
   try {

@@ -1,16 +1,18 @@
 # 政策抓取入库运维工具
 
-独立部署在 `E:\python_project\crawlerToBase`，不修改 KMS 或现有 Policy 代码。工具只抓取申报类政策，包括随申办非免申项目和企服云申报中项目；标准化后写入 `dsfa_policy` 独立表，再调用 `POST /kms/api/etl/dg/crawlerToBase`。
+独立部署在 `E:\python_project\crawlerToBase`，不修改 KMS 或现有 Policy 代码。工具抓取申报类和非申报类政策：随申办非免申项目、随申办免申项目及企服云申报中项目；标准化后写入 `dsfa_policy` 独立表，再调用 `POST /kms/api/etl/dg/crawlerToBase`。
 
 ## 关键行为
 
 - 随申办：只保留“进行中/即将开始”且明确 `freeEnjoy=false`（免申为“否”）的申报项目；字段缺失时不推断，直接排除。
+- 随申办非申报类：同样只保留“进行中/即将开始”，但固定 `freeEnjoy=true`（免申为“是”），并保存到非申报类知识库 `c24a793eec08458f873d263a090361d0`。
 - 企服云：请求条件固定为上海市、申报中；详情 `dataList` 或正文为空时记为 `source_empty`。
 - 唯一键 `(source_code, source_item_id, base_id)`；列表发现后批量去重，成功记录不请求详情。
+- 每个任务批次开始时，会按目标知识库一次性预加载 KMS 有效政策标题到内存；详情解析后同标题命中即跳过，不写入本地台账或再次入库。任务结束后该标题集合自动释放；KMS 查询异常时保守放行并继续本地去重。
 - KMS 失败记录使用数据库中经过 Pydantic 校验的 `kms_payload_json` 重推，不重新抓站点。
 - KMS `1` 和 `7` 都视为成功；网络错误和 5xx 指数退避重试三次，其他业务码不自动重试。
 - 附件作为正文绝对链接，不发送 `attaches`（KMS 的该字段是文件服务 ID）。
-- 每天 Asia/Shanghai 01:00 将两个任务放在同一串行批次执行。
+- 定时抓取默认每天 Asia/Shanghai 01:00 执行全部任务；可在任务中心动态启停、修改时间和选择任务，定时任务仅抓取到本地台账。
 
 ## 安装
 
@@ -18,7 +20,7 @@
 
 1. 双击 `start-with-venv.bat` 创建项目内 `.venv` 并安装依赖。
 2. 将 `.env.example` 复制为 `.env`，填写数据库账号、密码和 KMS 地址。不要把 `.env` 提交到版本库。
-3. 在 `dsfa_policy` 执行 `sql/001_init.sql`。
+3. 在 `dsfa_policy` 依次执行 `sql/001_init.sql` 和 `sql/002_schedule_config.sql`。
 4. 双击 `start.bat`，浏览器访问 `http://127.0.0.1:8000`。
 
 也可以手工启动：
@@ -35,6 +37,7 @@ Copy-Item .env.example .env
 ## 运维 API
 
 - `GET /api/tasks`：任务和最近批次。
+- `GET /api/schedule`、`PUT /api/schedule`：读取或更新定时抓取开关、每日时间和任务列表；配置保存后立即生效。
 - `POST /api/runs`：启动；预检示例 `{"task_codes":[],"dry_run":true}`，正式执行还须 `confirm_write=true`。
 - `GET /api/runs/{run_id}`、`GET /api/runs/{run_id}/items`：进度和明细。
 - `GET /api/runs/{run_id}/events`：SSE，支持 `Last-Event-ID` 续传。

@@ -55,6 +55,19 @@ def test_suishenban_filters_and_decodes_base64():
     assert article.policy_level is None
 
 
+def test_suishenban_non_declare_uses_free_enjoy_filter():
+    def handler(request):
+        assert request.url.path.endswith("hqPolicy/projects")
+        body = json.loads(request.content)
+        assert body["applyState"] == "1,2" and body["freeEnjoy"] is True
+        return response(request, {"data": {"total": 2, "list": [
+            {"id": "free-1", "name": "保留免申政策", "freeEnjoy": True},
+            {"id": "normal-1", "name": "排除申报政策", "freeEnjoy": False},
+        ]}})
+    adapter = SuishenbanAdapter(httpx.Client(transport=httpx.MockTransport(handler)), free_enjoy=True)
+    assert [item.source_item_id for item in adapter.discover()] == ["free-1"]
+
+
 def test_suishenban_district_department_is_blanked():
     encoded = base64.b64encode("<p>政策正文</p>".encode()).decode()
     def handler(request):

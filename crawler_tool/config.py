@@ -11,6 +11,19 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT_DIR / "static"
 LOG_DIR = ROOT_DIR / "logs"
 TARGET_BASE_ID = "395cbf7152564184ad7c701beaf80cc5"
+NON_DECLARE_BASE_ID = "c24a793eec08458f873d263a090361d0"
+
+
+def policy_type_for_base(base_id: str) -> str:
+    if base_id == TARGET_BASE_ID:
+        return "declare"
+    if base_id == NON_DECLARE_BASE_ID:
+        return "non_declare"
+    return "unknown"
+
+
+def policy_type_name(policy_type: str) -> str:
+    return {"declare": "申报类", "non_declare": "非申报类"}.get(policy_type, "其他")
 
 
 class Settings(BaseSettings):
@@ -88,6 +101,16 @@ TASKS = {
         "source_name": "上海一网通办",
         "base_id": TARGET_BASE_ID,
         "rule": "申报类：申报期限为进行中或即将开始，且免申为否",
+        "free_enjoy": False,
+    },
+    "suishenban_non_declare": {
+        "code": "suishenban_non_declare",
+        "name": "随申办—非申报类政策抓取",
+        "source_code": "suishenban",
+        "source_name": "上海一网通办",
+        "base_id": NON_DECLARE_BASE_ID,
+        "rule": "非申报类：申报期限为进行中或即将开始，且免申为是",
+        "free_enjoy": True,
     },
     "qifuyun_declare": {
         "code": "qifuyun_declare",

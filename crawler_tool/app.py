@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -21,7 +22,7 @@ from .engine import RunConflictError, RunManager
 from .events import EventStore
 from . import kms_kb
 from .logging_config import configure_logging
-from .models import KmsAuthConfigRequest, PushArticlesRequest, StartRunRequest, UpdateArticlesRequest, UrlRunRequest
+from .models import KmsAuthConfigRequest, PushArticlesRequest, ScheduleConfigRequest, StartRunRequest, UpdateArticlesRequest, UrlRunRequest
 
 
 settings = get_settings()
@@ -29,28 +30,60 @@ configure_logging(settings)
 database = Database(settings)
 events = EventStore()
 manager = RunManager(settings, database, events)
+scheduler: BackgroundScheduler | None = None
+logger = logging.getLogger(__name__)
 
 
-def scheduled_run() -> None:
+def scheduled_run(task_codes: list[str]) -> None:
     try:
-        manager.start(list(TASKS), dry_run=False, trigger_type="schedule", phase="crawl")
+        manager.start(task_codes, dry_run=False, trigger_type="schedule", phase="crawl")
     except RunConflictError:
         return
 
 
+def default_schedule_config() -> dict[str, Any]:
+    return {"enabled": True, "hour": settings.schedule_hour, "minute": settings.schedule_minute, "task_codes": list(TASKS)}
+
+
+def stored_schedule_config() -> dict[str, Any]:
+    """读取持久化设置；升级未执行迁移时退回旧的 .env 调度，避免中断抓取。"""
+    try:
+        config = database.get_schedule_config()
+        return config or database.save_schedule_config(**default_schedule_config())
+    except Exception:
+        logger.exception("定时配置表不可用，暂时使用 .env 默认调度；请执行 sql/002_schedule_config.sql")
+        return default_schedule_config()
+
+
+def apply_schedule(config: dict[str, Any]) -> None:
+    if scheduler is None:
+        return
+    if scheduler.get_job("daily-policy-crawler"):
+        scheduler.remove_job("daily-policy-crawler")
+    if config["enabled"]:
+        scheduler.add_job(
+            scheduled_run, args=[config["task_codes"]],
+            trigger=CronTrigger(hour=config["hour"], minute=config["minute"], timezone="Asia/Shanghai"),
+            id="daily-policy-crawler", coalesce=True, max_instances=1, misfire_grace_time=3600,
+        )
+
+
+def schedule_response(config: dict[str, Any]) -> dict[str, Any]:
+    job = scheduler.get_job("daily-policy-crawler") if scheduler else None
+    return {**config, "next_run_time": job.next_run_time if job else None}
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    global scheduler
     if settings.bind_host not in {"127.0.0.1", "localhost", "::1"} and not (settings.admin_user and settings.admin_password):
         raise RuntimeError("非本机监听必须配置 CRAWLER_ADMIN_USER 和 CRAWLER_ADMIN_PASSWORD")
     scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
-    scheduler.add_job(
-        scheduled_run,
-        CronTrigger(hour=settings.schedule_hour, minute=settings.schedule_minute, timezone="Asia/Shanghai"),
-        id="daily-policy-crawler", coalesce=True, max_instances=1, misfire_grace_time=3600,
-    )
+    apply_schedule(stored_schedule_config())
     scheduler.start()
     yield
     scheduler.shutdown(wait=False)
+    scheduler = None
 
 
 app = FastAPI(title="政策抓取入库运维工具", version="1.0.0", lifespan=lifespan)
@@ -88,6 +121,27 @@ def get_tasks():
         runs = []
         pending = 0
     return {"tasks": list(TASKS.values()), "active_run": manager.active_run, "recent_runs": runs, "pending_count": pending}
+
+
+@app.get("/api/schedule")
+def get_schedule():
+    return schedule_response(stored_schedule_config())
+
+
+@app.put("/api/schedule")
+def set_schedule(body: ScheduleConfigRequest):
+    unknown = sorted(set(body.task_codes) - set(TASKS))
+    if unknown:
+        raise HTTPException(400, f"未知定时任务: {', '.join(unknown)}")
+    task_codes = list(dict.fromkeys(body.task_codes))
+    if body.enabled and not task_codes:
+        raise HTTPException(400, "启用定时抓取时至少选择一个任务")
+    try:
+        config = database.save_schedule_config(body.enabled, body.hour, body.minute, task_codes)
+    except Exception as exc:
+        raise HTTPException(503, "定时配置表尚未初始化，请先执行 sql/002_schedule_config.sql") from exc
+    apply_schedule(config)
+    return schedule_response(config)
 
 
 @app.get("/api/kms-auth")
@@ -143,6 +197,7 @@ def list_articles(
     source_code: str | None = None,
     keyword: str | None = None,
     update_status: str | None = None,
+    policy_type: str | None = None,
 ):
     return database.list_articles(
         page, size,
@@ -150,6 +205,7 @@ def list_articles(
         source_code=(source_code or "").strip() or None,
         keyword=(keyword or "").strip() or None,
         update_status=(update_status or "").strip() or None,
+        policy_type=(policy_type or "").strip() or None,
     )
 
 

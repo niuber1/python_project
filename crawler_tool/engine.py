@@ -124,7 +124,10 @@ class RunManager:
             self._stop_flags.pop(run_id, None)
 
     def _adapter(self, task_code: str, client: httpx.Client):
-        return SuishenbanAdapter(client) if task_code == "suishenban_declare" else QifuyunAdapter(client)
+        task = TASKS[task_code]
+        if task["source_code"] == "suishenban":
+            return SuishenbanAdapter(client, free_enjoy=bool(task.get("free_enjoy", False)))
+        return QifuyunAdapter(client)
 
     @staticmethod
     def _payload(article: PolicyArticle, content: str, base_id: str) -> CrawlerPayload:
@@ -163,7 +166,8 @@ class RunManager:
         counts = {"total": 0, "processed": 0, "succeeded": 0, "skipped": 0, "failed": 0}
         stop_flag = self._stop_flags[run_id]
         push_kms = phase != "crawl"
-        seen_titles: set[str] = set()
+        seen_titles: set[tuple[str, str]] = set()
+        kms_titles_by_base: dict[str, set[str] | None] = {}
         self.db.update_run(run_id, status="running", started_at=datetime.now(), message="任务运行中")
         self.events.emit(run_id, "status", "任务开始" + ("（重新抓取并比对已存在政策）" if refresh_existing else ""), dry_run=dry_run)
         kms: KmsClient | None = None
@@ -184,6 +188,14 @@ class RunManager:
                         break
                     task = TASKS[task_code]
                     adapter = self._adapter(task_code, client)
+                    base_id = task["base_id"]
+                    if base_id not in kms_titles_by_base:
+                        kms_titles_by_base[base_id] = kms_kb.titles_in_base(self.settings, base_id)
+                        cached_titles = kms_titles_by_base[base_id]
+                        if cached_titles is None:
+                            self.events.emit(run_id, "warning", f"{task['name']}：KMS 标题预加载失败，将继续按本地台账去重")
+                        else:
+                            self.events.emit(run_id, "log", f"{task['name']}：已预加载 KMS 标题 {len(cached_titles)} 条")
                     self.events.emit(run_id, "log", f"开始发现：{task['name']}", task_code=task_code)
                     candidates = adapter.discover()
                     # 同一批次内按项目名去重，避免同一项目被重复抓取
@@ -204,7 +216,7 @@ class RunManager:
                     for candidate in candidates:
                         if stop_flag.is_set():
                             break
-                        outcome = self._process_candidate(run_id, task_code, task, candidate, existing.get(candidate.source_item_id), dry_run, adapter, kms, push_kms, seen_titles, refresh_existing)
+                        outcome = self._process_candidate(run_id, task_code, task, candidate, existing.get(candidate.source_item_id), dry_run, adapter, kms, push_kms, seen_titles, refresh_existing, kms_titles_by_base[base_id])
                         counts["processed"] += 1
                         counts[outcome] += 1
                         self.db.update_run(run_id, **counts, current_item=candidate.source_item_id)
@@ -247,7 +259,7 @@ class RunManager:
                 },
             ) as client:
                 adapters: dict[str, Any] = {}
-                seen_titles: set[str] = set()
+                seen_titles: set[tuple[str, str]] = set()
                 for url in urls:
                     if stop_flag.is_set():
                         break
@@ -313,7 +325,7 @@ class RunManager:
         logger.info("run_id=%s auto_sync: push run %s started with %d articles", crawl_run_id, push_run_id, len(article_ids))
         return push_run_id
 
-    def _process_candidate(self, run_id: str, task_code: str, task: dict[str, Any], candidate, existing, dry_run: bool, adapter, kms: KmsClient | None, push_kms: bool = True, seen_titles: set[str] | None = None, refresh_existing: bool = False) -> str:
+    def _process_candidate(self, run_id: str, task_code: str, task: dict[str, Any], candidate, existing, dry_run: bool, adapter, kms: KmsClient | None, push_kms: bool = True, seen_titles: set[tuple[str, str]] | None = None, refresh_existing: bool = False, kms_titles: set[str] | None = None) -> str:
         started = time.monotonic()
         item_id = uuid.uuid4().hex
         self.db.create_run_item(
@@ -371,14 +383,19 @@ class RunManager:
                 self.db.update_run_item(item_id, policy_crawler_article_id=article_id, kms_document_id=payload.id, phase="store", status="success", message=message, duration_ms=int((time.monotonic() - started) * 1000), finished_at=datetime.now())
                 return "succeeded"
             # 标题去重：同批次内重复标题，或库中已存在同标题，直接跳过（不重复抓取入库）
-            title_key = (article.title or "").strip()
-            if title_key and seen_titles is not None:
-                if title_key in seen_titles or self.db.find_existing_by_title(title_key):
+            title = (article.title or "").strip()
+            title_key = (task["base_id"], title)
+            if title and seen_titles is not None:
+                if title_key in seen_titles or self.db.find_existing_by_title(title_key[1], task["base_id"]):
                     seen_titles.add(title_key)
                     self.db.update_run_item(item_id, phase="deduplicate", status="skipped", message="标题重复（本批次或库中已存在），跳过", duration_ms=int((time.monotonic() - started) * 1000), finished_at=datetime.now())
                     logger.info("run_id=%s task_code=%s source_item_id=%s skipped, duplicate title", run_id, task_code, candidate.source_item_id)
                     return "skipped"
                 seen_titles.add(title_key)
+            if title and kms_titles is not None and title in kms_titles:
+                self.db.update_run_item(item_id, phase="deduplicate", status="skipped", message="KMS 知识库已存在同标题，跳过", duration_ms=int((time.monotonic() - started) * 1000), finished_at=datetime.now())
+                logger.info("run_id=%s task_code=%s source_item_id=%s skipped, KMS title exists", run_id, task_code, candidate.source_item_id)
+                return "skipped"
             if dry_run:
                 self.db.update_run_item(item_id, phase="validate", status="dry_run", message="抓取及 KMS payload 校验通过，未写数据库/KMS", duration_ms=int((time.monotonic() - started) * 1000), finished_at=datetime.now())
                 return "succeeded"

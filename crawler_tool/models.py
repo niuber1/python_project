@@ -148,6 +148,13 @@ class StartRunRequest(BaseModel):
     refresh_existing: bool = False
 
 
+class ScheduleConfigRequest(BaseModel):
+    enabled: bool = True
+    hour: int = Field(ge=0, le=23)
+    minute: int = Field(ge=0, le=59)
+    task_codes: list[str] = Field(default_factory=list)
+
+
 class UrlRunRequest(BaseModel):
     urls: list[str] = Field(min_length=1, max_length=200)
     dry_run: bool = False

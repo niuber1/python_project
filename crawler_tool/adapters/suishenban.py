@@ -13,11 +13,15 @@ class SuishenbanAdapter(CrawlerAdapter):
     api_root = "https://zwdt.sh.gov.cn/qykj/shspace/"
     web_root = "https://zwdt.sh.gov.cn/qykj/shell_oc_policy_zq/policy/"
 
+    def __init__(self, client, *, free_enjoy: bool = False):
+        super().__init__(client)
+        self.free_enjoy = free_enjoy
+
     def health_url(self) -> str:
         return urljoin(self.api_root, "callinterface/policyproject")
 
     def discover(self) -> list[PolicyCandidate]:
-        # 与网站「政策中心」页面同口径：申报期限=进行中+即将开始(applyState 1,2)、是否免申=否。
+        # 与网站「政策中心」页面同口径：申报期限=进行中+即将开始(applyState 1,2)。
         # 筛选由服务端完成（与手动访问看到的结果一致），本地不再做日期推算。
         body = {
             "isNeedSort": False,
@@ -26,7 +30,7 @@ class SuishenbanAdapter(CrawlerAdapter):
             "sortStrategy": 0,
             "applyState": "1,2",  # 1=即将开始(未开始) 2=申报中(进行中)
             "policyType": ["BTLX", "RZLX", "JMLX", "RCLX", "RYLX", "JYLX", "QT"],
-            "freeEnjoy": False,   # 是否免申：否
+            "freeEnjoy": self.free_enjoy,
             "open": True,
             "clientType": "1",    # 企业端
         }
@@ -48,8 +52,9 @@ class SuishenbanAdapter(CrawlerAdapter):
             for row in rows:
                 if not isinstance(row, dict):
                     continue
-                # 防御性复查：仅保留非免申（正常由服务端 freeEnjoy=false 过滤）
-                if str(row.get("freeEnjoy")).strip().lower() not in {"false", "0", "否"}:
+                # 防御性复查：仅保留与任务一致的免申标识（正常由服务端过滤）。
+                row_free_enjoy = str(row.get("freeEnjoy")).strip().lower() in {"true", "1", "是"}
+                if row_free_enjoy != self.free_enjoy:
                     continue
                 project_id = str(row.get("id") or "").strip()
                 if not project_id:
