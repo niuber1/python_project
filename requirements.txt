@@ -7,6 +7,7 @@ beautifulsoup4>=4.12,<5
 lxml>=5,<7
 bleach>=6.1,<7
 pydantic-settings>=2.5,<3
+# Python 3.9 环境中供 Pydantic 解析 ``str | None`` 等新式联合注解。
+eval-type-backport>=0.2,<1
 pytest>=8,<10
 respx>=0.22,<1
-

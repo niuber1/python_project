@@ -58,8 +58,8 @@ def source_from_url(url: str) -> str:
     # 上海市政府主动公开公文库属于上海一网通办公开入口，但其详情页不使用
     # 随申办项目 API 的 policyId 参数，需走网页详情解析分支。
     if host == "www.shanghai.gov.cn" or host.endswith(".shanghai.gov.cn"):
-        return "suishenban"
-    raise ValueError("无法根据 URL 域名识别来源；仅支持随申办或企服云详情页")
+        return "shanghai_policy_platform" if urlparse(url).path.startswith("/zhengce/detail") else "suishenban"
+    raise ValueError("无法根据 URL 域名识别来源；仅支持随申办、企服云或上海市统一政策发布平台详情页")
 
 
 def candidate_from_url(url: str) -> PolicyCandidate:
@@ -67,6 +67,12 @@ def candidate_from_url(url: str) -> PolicyCandidate:
     source_code = source_from_url(url)
     values = _parameters(url)
     path = urlparse(url).path.lower()
+    if source_code == "shanghai_policy_platform":
+        site_id, business_id = _first(values, "siteId"), _first(values, "businessId")
+        if not site_id or not business_id:
+            raise ValueError("未在上海市统一政策发布平台 URL 中识别到 siteId、businessId")
+        return PolicyCandidate(source_code=source_code, source_item_id=f"{site_id}:{business_id}", project_name=url,
+            detail_ref=business_id, original_url=url, raw={"url_input": url, "url_reference": "shanghai_policy_platform", "site_id": site_id, "business_id": business_id})
     if source_code == "suishenban":
         if (urlparse(url).hostname or "").lower().endswith("shanghai.gov.cn"):
             page_id = next((part for part in reversed(urlparse(url).path.split("/")) if part), "")

@@ -146,7 +146,7 @@
             <div>
               <p class="eyebrow">URL CRAWL</p>
               <h2>按 URL 抓取政策</h2>
-              <p class="hint">每行或每个英文分号输入一条随申办或企服云政策/项目详情页 URL；系统自动识别来源，只保存到本地待入库，不会调用 KMS。</p>
+              <p class="hint">每行或每个英文分号输入一条随申办、企服云或上海市统一政策发布平台详情页 URL；系统自动识别来源，只保存到本地待入库，不会调用 KMS。</p>
             </div>
           </div>
           <label class="url-input-label">政策详情 URL
@@ -222,7 +222,8 @@
             <span class="group" id="sourceFilter"
               ><button class="opt on" data-source="">全部来源</button
               ><button class="opt" data-source="suishenban">随申办</button
-              ><button class="opt" data-source="qifuyun">企服云</button></span
+              ><button class="opt" data-source="qifuyun">企服云</button
+              ><button class="opt" data-source="shanghai_policy_platform">上海市统一政策发布平台</button></span
             ><span class="group" id="typeFilter"
               ><button class="opt on" data-policy-type="">全部类型</button
               ><button class="opt" data-policy-type="declare">申报类</button
@@ -232,6 +233,14 @@
               ><button class="opt" data-sync-status="pending">待入库</button
               ><button class="opt" data-sync-status="success">已同步</button
               ><button class="opt" data-sync-status="failed">同步失败</button></span
+            ><span class="group" id="levelFilter"
+              ><button class="opt on" data-policy-level="">全部层级</button
+              ><button class="opt" data-policy-level="市级">市级</button
+              ><button class="opt" data-policy-level="市级部门">市级部门</button
+              ><button class="opt" data-policy-level="各区">各区</button></span
+            ><span class="group" id="crawlStatusFilter"
+              ><button class="opt on" data-crawl-status="">全部抓取状态</button
+              ><button class="opt" data-crawl-status="classification_failed">抓取失败</button></span
             ><input
               id="keyword"
               type="search"
@@ -260,6 +269,7 @@
                   <th>发文日期</th>
                   <th>抓取时间</th>
                   <th>申报起止</th>
+                  <th>抓取状态</th>
                   <th>同步状态</th>
                   <th data-content-update hidden>正文更新</th>
                   <th>同步日期</th>

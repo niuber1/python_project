@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     kms_access_token: str = ""
     kms_authorization: str = ""
     kms_cookie: str = ""
+    policy_base_url: str = "https://aies.dreamdt.cn"
+    policy_classify_path: str = "/policy/api/policy-classification/classify"
     # 正文覆盖更新功能保留但默认关闭；开启后才允许重新抓取比对和覆盖 KMS 正文。
     enable_content_update: bool = False
     bind_host: str = "127.0.0.1"
@@ -60,6 +62,7 @@ class Settings(BaseSettings):
     admin_password: str = ""
     request_timeout_seconds: float = Field(default=60, gt=0, le=600)
     kms_timeout_seconds: float = Field(default=300, gt=0, le=900)
+    run_stale_minutes: int = Field(default=30, ge=5, le=1440)
     item_delay_seconds: float = Field(default=0.2, ge=0, le=30)
     max_items_per_task: int = Field(default=0, ge=0)
     schedule_hour: int = Field(default=1, ge=0, le=23)
@@ -81,6 +84,10 @@ class Settings(BaseSettings):
     @property
     def kms_token_url(self) -> str:
         return f"{self.kms_base_url.rstrip('/')}/{self.kms_token_path.lstrip('/')}"
+
+    @property
+    def policy_classify_url(self) -> str:
+        return f"{self.policy_base_url.rstrip('/')}/{self.policy_classify_path.lstrip('/')}"
 
     def ensure_directories(self) -> None:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -119,5 +126,16 @@ TASKS = {
         "source_name": "上海市企业服务云",
         "base_id": TARGET_BASE_ID,
         "rule": "上海市、申报中；政策原文为空时跳过",
+    },
+    "shanghai_policy_platform": {
+        "code": "shanghai_policy_platform",
+        "name": "上海市统一政策发布平台—政策抓取",
+        "source_code": "shanghai_policy_platform",
+        "source_name": "上海市统一政策发布平台",
+        # 分类后才确定目标知识库；此值仅用于兼容既有任务数据结构。
+        "base_id": TARGET_BASE_ID,
+        "candidate_base_ids": [TARGET_BASE_ID, NON_DECLARE_BASE_ID],
+        "rule": "市级、部门、各区文件；仅保留智能体判定为惠企的申报通知类、申报类、非申报通知类或非申报类政策",
+        "requires_classification": True,
     },
 }

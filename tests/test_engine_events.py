@@ -11,7 +11,7 @@ from crawler_tool.models import KmsResult, PolicyArticle, PolicyCandidate, PushA
 
 
 class FakeDb:
-    def __init__(self): self.items=[]; self.article_results=[]; self.run_updates=[]
+    def __init__(self): self.items=[]; self.article_results=[]; self.run_updates=[]; self.claimed=[]; self.released=[]
     def create_run_item(self, **values): self.items.append(values)
     def update_run_item(self, item_id, **values): self.items.append({"id":item_id, **values})
     def update_article_kms(self, article_id, result): self.article_results.append((article_id,result))
@@ -21,6 +21,13 @@ class FakeDb:
     def refresh_existing_article(self, *args): self.refreshed = args
     def find_existing(self, *args): return {}
     def find_existing_by_title(self, *args): return False
+    def existing_source_ids(self, *args): return set()
+    def article_titles_in_bases(self, *args): return set()
+    def create_skipped_run_items(self, rows): self.items.extend(rows)
+    def claim_articles_for_push(self, article_ids):
+        self.claimed.append(list(article_ids))
+        return {article_id: "pending" for article_id in article_ids}
+    def release_articles_from_processing(self, statuses): self.released.append(dict(statuses))
 
 
 class NeverFetch:
@@ -86,6 +93,7 @@ def test_crawl_phase_does_not_call_kms():
         def push(self,payload): raise AssertionError("仅抓取模式不应调用 KMS")
     outcome=manager._process_candidate("run","qifuyun_declare",TASKS["qifuyun_declare"],candidate,None,False,FakeAdapter(),BoomKms(),push_kms=False)
     assert outcome=="succeeded" and db.article_results==[]
+    assert candidate.project_name == "标题"
 
 
 def test_crawl_phase_skips_existing_article():
@@ -175,7 +183,8 @@ def test_content_update_disabled_rejects_refresh_and_manual_update():
 def test_url_run_only_stores_locally_and_does_not_construct_kms(monkeypatch):
     import crawler_tool.engine as engine_mod
     db = FakeDb()
-    manager = RunManager(Settings(_env_file=None), db, EventStore())
+    events = EventStore()
+    manager = RunManager(Settings(_env_file=None), db, events)
 
     class Adapter:
         def fetch(self, candidate):
@@ -191,6 +200,7 @@ def test_url_run_only_stores_locally_and_does_not_construct_kms(monkeypatch):
     manager._execute_url("url-run", ["https://shpolicy.ssme.sh.gov.cn/knowledge/#/policy?policyId=q-1"], False)
     assert db.article_results == []
     assert any(item.get("phase") == "store" and item.get("status") == "success" for item in db.items)
+    assert any("政策标题：URL 政策\n原始 URL：https://shpolicy.ssme.sh.gov.cn/knowledge/#/policy?policyId=q-1" == event["message"] for event in events.wait_after("url-run", 0, 0))
     assert manager._active_run is None
 
 
@@ -241,6 +251,45 @@ def test_push_articles_selected_only_and_dedup(monkeypatch):
     manager._execute_push_ids("run", ["a2", "a1", "a2"], False)
     assert {aid for aid, _ in db.article_results} == {"a1", "a2"}
     assert len(db.article_results) == 2 and manager._active_run is None
+
+
+def test_push_articles_claims_rows_before_background_thread_starts(monkeypatch):
+    import crawler_tool.engine as engine_mod
+
+    db = FakeDb()
+    started = []
+
+    class DeferredThread:
+        def __init__(self, *, target, args, **_):
+            self.target = target
+            self.args = args
+
+        def start(self):
+            started.append(self.args)
+
+    monkeypatch.setattr(engine_mod.threading, "Thread", DeferredThread)
+    manager = RunManager(Settings(_env_file=None), db, EventStore())
+
+    run_id = manager.push_articles(["a1", "a2", "a1"], False)
+
+    assert db.claimed == [["a1", "a2"]]
+    assert started and started[0][0] == run_id
+    assert started[0][3] == {"a1": "pending", "a2": "pending"}
+
+
+def test_push_articles_preview_does_not_claim_rows(monkeypatch):
+    import crawler_tool.engine as engine_mod
+
+    db = FakeDb()
+    monkeypatch.setattr(engine_mod.threading, "Thread", type("DeferredThread", (), {
+        "__init__": lambda self, **kwargs: setattr(self, "args", kwargs["args"]),
+        "start": lambda self: None,
+    }))
+    manager = RunManager(Settings(_env_file=None), db, EventStore())
+
+    manager.push_articles(["a1"], True)
+
+    assert db.claimed == []
 
 
 def test_push_articles_dry_run_does_not_call_kms(monkeypatch):
@@ -332,6 +381,110 @@ def test_crawl_skips_title_preloaded_from_kms_without_inserting_locally():
     assert any(item.get("message") == "KMS 知识库已存在同标题，跳过" for item in db.items)
 
 
+def test_platform_classification_routes_base_and_uses_matching_kms_title_set(monkeypatch):
+    import crawler_tool.engine as engine_mod
+    from crawler_tool.config import NON_DECLARE_BASE_ID
+
+    db = FakeDb()
+    db.find_existing_any_base = lambda *_: None
+    db.find_existing_by_title = lambda *_: False
+    db.insert_article = lambda *args, **kwargs: pytest.fail("对应知识库已有标题时不应写本地台账")
+    class Classifier:
+        def __init__(self, *_): pass
+        def classify(self, *_):
+            return type("Result", (), {"base_id": NON_DECLARE_BASE_ID, "applicable_type": "惠企", "policy_type": "非申报通知类"})()
+    monkeypatch.setattr(engine_mod, "PolicyClassifier", Classifier)
+    candidate = PolicyCandidate(source_code="shanghai_policy_platform", source_item_id="0001:b1", project_name="平台政策", detail_ref="b1")
+    class Adapter:
+        client = object()
+        def fetch(self, _):
+            return PolicyArticle(source_code="shanghai_policy_platform", source_item_id="0001:b1", source_name="上海市统一政策发布平台", title="已存在的非申报标题", project_name="平台政策", original_url="https://example.com", raw_content_html="<p>正文</p>")
+    events = EventStore()
+    outcome = RunManager(Settings(_env_file=None), db, events)._process_candidate(
+        "run", "shanghai_policy_platform", TASKS["shanghai_policy_platform"], candidate, None,
+        False, Adapter(), None, push_kms=False, seen_titles=set(),
+        kms_titles_by_base={NON_DECLARE_BASE_ID: {"已存在的非申报标题"}},
+    )
+    assert outcome == "skipped"
+    assert any(item.get("message") == "KMS 知识库已存在同标题，跳过" for item in db.items)
+    classification_messages = [
+        event["message"] for event in events.wait_after("run", 0, 0)
+        if event["message"].startswith("智能体判断：")
+    ]
+    assert classification_messages == ["智能体判断：applicable_type=惠企；policy_type=非申报通知类"]
+    assert all("政策标题：" not in message for message in classification_messages)
+
+
+def test_platform_prefilter_skips_before_detail_and_preserves_reason_priority():
+    from crawler_tool.config import NON_DECLARE_BASE_ID, TARGET_BASE_ID
+
+    db = FakeDb()
+    db.existing_source_ids = lambda source_code: {"0001:source-existing"}
+    db.article_titles_in_bases = lambda base_ids: {"本地标题"}
+    manager = RunManager(Settings(_env_file=None), db, EventStore())
+    candidates = [
+        PolicyCandidate(source_code="shanghai_policy_platform", source_item_id="0001:source-existing", project_name="来源已存在", detail_ref="1"),
+        PolicyCandidate(source_code="shanghai_policy_platform", source_item_id="0001:local-title", project_name="本地标题", detail_ref="2"),
+        PolicyCandidate(source_code="shanghai_policy_platform", source_item_id="0001:kms-title", project_name="KMS 标题", detail_ref="3"),
+        PolicyCandidate(source_code="shanghai_policy_platform", source_item_id="0001:new-1", project_name="新标题", detail_ref="4"),
+        PolicyCandidate(source_code="shanghai_policy_platform", source_item_id="0001:new-2", project_name="新标题", detail_ref="5"),
+    ]
+
+    fresh, skipped, summary = manager._prefilter_platform_candidates(
+        candidates,
+        TASKS["shanghai_policy_platform"],
+        {TARGET_BASE_ID: set(), NON_DECLARE_BASE_ID: {"KMS 标题"}},
+    )
+
+    assert [item.source_item_id for item in fresh] == ["0001:new-1"]
+    assert [reason for _, reason in skipped] == [
+        "来源 ID 已存在于本地台账，提前跳过",
+        "本地台账已存在同标题，提前跳过",
+        "KMS 任一目标知识库已存在同标题，提前跳过",
+        "当前批次标题重复，提前跳过",
+    ]
+    assert summary == {"source_id": 1, "local_title": 1, "kms_title": 1, "batch_title": 1}
+
+
+def test_platform_prefilter_does_not_use_classification_failure_table():
+    db = FakeDb()
+    manager = RunManager(Settings(_env_file=None), db, EventStore())
+    candidate = PolicyCandidate(
+        source_code="shanghai_policy_platform", source_item_id="0001:failed-before",
+        project_name="曾经分类失败", detail_ref="1",
+    )
+
+    fresh, skipped, summary = manager._prefilter_platform_candidates(
+        [candidate], TASKS["shanghai_policy_platform"], {},
+    )
+
+    assert fresh == [candidate] and skipped == []
+    assert summary == {"source_id": 0, "local_title": 0, "kms_title": 0, "batch_title": 0}
+
+
 def test_event_store_replays_after_last_event_id():
     store=EventStore(); store.emit("r","log","one"); store.emit("r","log","two")
     assert [e["message"] for e in store.wait_after("r",1,0)]==["two"]
+
+
+def test_event_store_replays_persisted_history_after_restart():
+    class EventRepository:
+        rows = []
+
+        def append_run_event(self, run_id, event_type, message, data, created_at):
+            event_id = len(self.rows) + 1
+            self.rows.append({"id": event_id, "type": event_type, "message": message, "time": created_at.isoformat(timespec="seconds"), **data})
+            return event_id
+
+        def recent_run_events(self, run_id, limit):
+            return [row for row in self.rows if row.get("run_id", run_id) == run_id][-limit:]
+
+        def list_run_events(self, run_id, after_id, limit=200):
+            return [row for row in self.rows if row.get("run_id", run_id) == run_id and row["id"] > after_id][:limit]
+
+    repository = EventRepository()
+    EventStore(repository).emit("run", "status", "任务开始", total=1)
+    restarted_store = EventStore(repository)
+
+    assert [event["message"] for event in restarted_store.recent("run")] == ["任务开始"]
+    assert [event["message"] for event in restarted_store.wait_after("run", 0, 0)] == ["任务开始"]

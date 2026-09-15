@@ -10,15 +10,16 @@ from typing import Any
 
 import httpx
 
-from .adapters import QifuyunAdapter, SuishenbanAdapter
+from .adapters import QifuyunAdapter, ShanghaiPolicyPlatformAdapter, SuishenbanAdapter
 from .adapters.base import SourceEmptyError
-from .config import TASKS, Settings
+from .config import NON_DECLARE_BASE_ID, TARGET_BASE_ID, TASKS, Settings
 from .database import Database
 from .events import EventStore
 from .html_utils import compose_document_content, content_sha256
 from . import kms_kb
 from .kms_client import KmsClient
-from .models import CrawlerPayload, KmsResult, PolicyArticle, deterministic_document_id
+from .models import CrawlerPayload, KmsResult, PolicyArticle, PolicyCandidate, deterministic_document_id
+from .policy_classifier import ClassificationError, ClassificationSkipped, PolicyClassifier
 from .url_inputs import candidate_from_url, normalize_urls
 
 
@@ -109,6 +110,23 @@ class RunManager:
         threading.Thread(target=self._execute_retry, args=(run_id, original_run_id), daemon=True).start()
         return run_id
 
+    def recrawl_classification_failures(self, failure_ids: list[str] | None) -> str:
+        """仅重新获取失败来源详情并调用分类服务，不触发 KMS 入库。"""
+        with self._guard:
+            if self._active_run:
+                raise RunConflictError(self._active_run)
+            run_id = uuid.uuid4().hex
+            self._active_run = run_id
+            self._stop_flags[run_id] = threading.Event()
+        try:
+            scope = "classification-retry-all" if failure_ids is None else "classification-retry"
+            self.db.create_run(run_id, "classification-retry", [scope], False)
+        except Exception:
+            self._release(run_id)
+            raise
+        threading.Thread(target=self._execute_classification_retry, args=(run_id, failure_ids), daemon=True, name=f"classification-retry-{run_id[:8]}").start()
+        return run_id
+
     def stop(self, run_id: str) -> bool:
         flag = self._stop_flags.get(run_id)
         if not flag:
@@ -125,9 +143,87 @@ class RunManager:
 
     def _adapter(self, task_code: str, client: httpx.Client):
         task = TASKS[task_code]
+        if task["source_code"] == "shanghai_policy_platform":
+            return ShanghaiPolicyPlatformAdapter(client)
         if task["source_code"] == "suishenban":
             return SuishenbanAdapter(client, free_enjoy=bool(task.get("free_enjoy", False)))
         return QifuyunAdapter(client)
+
+    def _preload_kms_titles(self, run_id: str, task: dict[str, Any], cache: dict[str, set[str] | None]) -> None:
+        """每批次仅在内存预加载一次目标知识库标题，供抓取时去重。"""
+        base_ids = task.get("candidate_base_ids") or [task["base_id"]]
+        for base_id in base_ids:
+            if base_id in cache:
+                continue
+            cache[base_id] = kms_kb.titles_in_base(self.settings, base_id)
+            titles = cache[base_id]
+            if titles is None:
+                self.events.emit(run_id, "warning", f"{task['name']}：KMS 标题预加载失败，将继续按本地台账去重")
+            else:
+                self.events.emit(run_id, "log", f"{task['name']}：已预加载 KMS 标题 {len(titles)} 条")
+
+    def _prefilter_platform_candidates(
+        self,
+        candidates: list[PolicyCandidate],
+        task: dict[str, Any],
+        kms_titles_by_base: dict[str, set[str] | None],
+    ) -> tuple[list[PolicyCandidate], list[tuple[PolicyCandidate, str]], dict[str, int]]:
+        """使用列表元数据排除无需抓详情、无需调用分类智能体的上海平台记录。"""
+        existing_source_ids = self.db.existing_source_ids(task["source_code"])
+        base_ids = task.get("candidate_base_ids") or [task["base_id"]]
+        local_titles = self.db.article_titles_in_bases(base_ids)
+        kms_titles: set[str] = set()
+        for base_id in base_ids:
+            titles = kms_titles_by_base.get(base_id)
+            if titles:
+                kms_titles.update(title.strip() for title in titles if title and title.strip())
+
+        fresh: list[PolicyCandidate] = []
+        skipped: list[tuple[PolicyCandidate, str]] = []
+        fresh_titles: set[str] = set()
+        summary = {"source_id": 0, "local_title": 0, "kms_title": 0, "batch_title": 0}
+        for candidate in candidates:
+            title = (candidate.project_name or "").strip()
+            reason = ""
+            if candidate.source_item_id in existing_source_ids:
+                reason = "来源 ID 已存在于本地台账，提前跳过"
+                summary["source_id"] += 1
+            elif title and title in local_titles:
+                reason = "本地台账已存在同标题，提前跳过"
+                summary["local_title"] += 1
+            elif title and title in kms_titles:
+                reason = "KMS 任一目标知识库已存在同标题，提前跳过"
+                summary["kms_title"] += 1
+            elif title and title in fresh_titles:
+                reason = "当前批次标题重复，提前跳过"
+                summary["batch_title"] += 1
+            if reason:
+                skipped.append((candidate, reason))
+                continue
+            if title:
+                fresh_titles.add(title)
+            fresh.append(candidate)
+        return fresh, skipped, summary
+
+    def _save_prefiltered_skips(
+        self,
+        run_id: str,
+        task_code: str,
+        skipped: list[tuple[PolicyCandidate, str]],
+    ) -> None:
+        now = datetime.now()
+        self.db.create_skipped_run_items([
+            {
+                "run_item_id": uuid.uuid4().hex,
+                "run_id": run_id,
+                "task_code": task_code,
+                "source_code": candidate.source_code,
+                "source_item_id": candidate.source_item_id,
+                "message": f"{reason}；政策标题：{candidate.project_name}",
+                "finished_at": now,
+            }
+            for candidate, reason in skipped
+        ])
 
     @staticmethod
     def _payload(article: PolicyArticle, content: str, base_id: str) -> CrawlerPayload:
@@ -189,34 +285,54 @@ class RunManager:
                     task = TASKS[task_code]
                     adapter = self._adapter(task_code, client)
                     base_id = task["base_id"]
-                    if base_id not in kms_titles_by_base:
-                        kms_titles_by_base[base_id] = kms_kb.titles_in_base(self.settings, base_id)
-                        cached_titles = kms_titles_by_base[base_id]
-                        if cached_titles is None:
-                            self.events.emit(run_id, "warning", f"{task['name']}：KMS 标题预加载失败，将继续按本地台账去重")
-                        else:
-                            self.events.emit(run_id, "log", f"{task['name']}：已预加载 KMS 标题 {len(cached_titles)} 条")
+                    self._preload_kms_titles(run_id, task, kms_titles_by_base)
                     self.events.emit(run_id, "log", f"开始发现：{task['name']}", task_code=task_code)
-                    candidates = adapter.discover()
-                    # 同一批次内按项目名去重，避免同一项目被重复抓取
-                    seen_names: set[str] = set()
-                    unique: list[Any] = []
-                    for item in candidates:
-                        key = (item.project_name or "").strip()
-                        if key and key in seen_names:
-                            continue
-                        seen_names.add(key)
-                        unique.append(item)
-                    candidates = unique
+                    candidates = adapter.discover(
+                        on_progress=lambda message: self.events.emit(
+                            run_id, "log", f"{task['name']}：{message}", task_code=task_code,
+                        )
+                    )
+                    # 上海平台需要保留全部列表项，由批量预过滤记录每一条跳过原因。
+                    if task["source_code"] != "shanghai_policy_platform" or refresh_existing:
+                        seen_names: set[str] = set()
+                        unique: list[Any] = []
+                        for item in candidates:
+                            key = (item.project_name or "").strip()
+                            if key and key in seen_names:
+                                continue
+                            seen_names.add(key)
+                            unique.append(item)
+                        candidates = unique
                     if self.settings.max_items_per_task:
                         candidates = candidates[:self.settings.max_items_per_task]
                     counts["total"] += len(candidates)
                     self.db.update_run(run_id, total=counts["total"])
+                    if task["source_code"] == "shanghai_policy_platform" and not refresh_existing:
+                        listed = len(candidates)
+                        candidates, early_skips, skip_summary = self._prefilter_platform_candidates(
+                            candidates, task, kms_titles_by_base,
+                        )
+                        self._save_prefiltered_skips(run_id, task_code, early_skips)
+                        counts["processed"] += len(early_skips)
+                        counts["skipped"] += len(early_skips)
+                        self.db.update_run(run_id, **counts)
+                        self.events.emit(
+                            run_id,
+                            "log",
+                            f"{task['name']}：列表预过滤完成：列表 {listed} 条；来源 ID 命中 {skip_summary['source_id']} 条；"
+                            f"本地标题命中 {skip_summary['local_title']} 条；KMS 标题命中 {skip_summary['kms_title']} 条；"
+                            f"本批次重复 {skip_summary['batch_title']} 条；实际详情抓取 {len(candidates)} 条",
+                            task_code=task_code,
+                        )
+                        if early_skips:
+                            self.events.emit(
+                                run_id, "progress", "列表预过滤完成", task_code=task_code, **counts,
+                            )
                     existing = self.db.find_existing(task["source_code"], [item.source_item_id for item in candidates], task["base_id"])
                     for candidate in candidates:
                         if stop_flag.is_set():
                             break
-                        outcome = self._process_candidate(run_id, task_code, task, candidate, existing.get(candidate.source_item_id), dry_run, adapter, kms, push_kms, seen_titles, refresh_existing, kms_titles_by_base[base_id])
+                        outcome = self._process_candidate(run_id, task_code, task, candidate, existing.get(candidate.source_item_id), dry_run, adapter, kms, push_kms, seen_titles, refresh_existing, kms_titles_by_base.get(base_id), kms_titles_by_base)
                         counts["processed"] += 1
                         counts[outcome] += 1
                         self.db.update_run(run_id, **counts, current_item=candidate.source_item_id)
@@ -260,12 +376,14 @@ class RunManager:
             ) as client:
                 adapters: dict[str, Any] = {}
                 seen_titles: set[tuple[str, str]] = set()
+                kms_titles_by_base: dict[str, set[str] | None] = {}
                 for url in urls:
                     if stop_flag.is_set():
                         break
+                    progress_label = url
                     try:
                         candidate = candidate_from_url(url)
-                        task_code = f"{candidate.source_code}_declare"
+                        task_code = "shanghai_policy_platform" if candidate.source_code == "shanghai_policy_platform" else f"{candidate.source_code}_declare"
                         task = TASKS[task_code]
                     except ValueError as exc:
                         item_id = uuid.uuid4().hex
@@ -276,15 +394,24 @@ class RunManager:
                         outcome = "failed"
                     else:
                         adapter = adapters.setdefault(task_code, self._adapter(task_code, client))
+                        if task.get("requires_classification"):
+                            self._preload_kms_titles(run_id, task, kms_titles_by_base)
                         existing = self.db.find_existing(task["source_code"], [candidate.source_item_id], task["base_id"])
+                        existing_row = existing.get(candidate.source_item_id)
+                        # 已存在记录会在去重阶段提前返回，此时不再请求详情；使用本地
+                        # 台账的标题，仍确保日志能展示「标题 + 原始 URL」。
+                        if existing_row and existing_row.get("title"):
+                            candidate.project_name = str(existing_row["title"])
                         outcome = self._process_candidate(
-                            run_id, task_code, task, candidate, existing.get(candidate.source_item_id), dry_run,
+                            run_id, task_code, task, candidate, existing_row, dry_run,
                             adapter, None, push_kms=False, seen_titles=seen_titles,
+                            kms_titles=kms_titles_by_base.get(task["base_id"]), kms_titles_by_base=kms_titles_by_base,
                         )
+                        progress_label = f"政策标题：{candidate.project_name}\n原始 URL：{url}"
                     counts["processed"] += 1
                     counts[outcome] += 1
                     self.db.update_run(run_id, **counts, current_item=url)
-                    self.events.emit(run_id, "progress", url, **counts)
+                    self.events.emit(run_id, "progress", progress_label, **counts)
                     if self.settings.item_delay_seconds:
                         time.sleep(self.settings.item_delay_seconds)
             status = "stopped" if stop_flag.is_set() else "completed"
@@ -293,6 +420,56 @@ class RunManager:
             self.events.emit(run_id, "complete", message, status=status, **counts)
         except Exception as exc:
             logger.exception("run_id=%s URL task failed", run_id)
+            self.db.update_run(run_id, status="failed", finished_at=datetime.now(), message=_error_summary(exc), **counts)
+            self.events.emit(run_id, "error", _error_summary(exc), **counts)
+        finally:
+            self._release(run_id)
+
+    def _execute_classification_retry(
+        self, run_id: str, failure_ids: list[str] | None
+    ) -> None:
+        counts = {"total": 0, "processed": 0, "succeeded": 0, "skipped": 0, "failed": 0}
+        stop_flag = self._stop_flags[run_id]
+        self.db.update_run(run_id, status="running", started_at=datetime.now(), message="重新抓取分类失败记录")
+        self.events.emit(run_id, "status", "开始重新抓取分类失败记录")
+        try:
+            failures = self.db.active_classification_failures(failure_ids)
+            counts["total"] = len(failures)
+            self.db.update_run(run_id, total=counts["total"])
+            task = TASKS["shanghai_policy_platform"]
+            with httpx.Client(timeout=self.settings.request_timeout_seconds, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json, text/plain, */*"}) as client:
+                adapter = self._adapter("shanghai_policy_platform", client)
+                kms_titles: dict[str, set[str] | None] = {}
+                self._preload_kms_titles(run_id, task, kms_titles)
+                seen_titles: set[tuple[str, str]] = set()
+                for row in failures:
+                    if stop_flag.is_set():
+                        break
+                    raw = json.loads(row.get("candidate_json") or "{}")
+                    source_item_id = str(row["source_item_id"])
+                    site_id, _, business_id = source_item_id.partition(":")
+                    candidate = PolicyCandidate(
+                        source_code=row["source_code"], source_item_id=source_item_id,
+                        project_name=row.get("project_name") or row.get("title") or source_item_id,
+                        detail_ref=business_id, original_url=row.get("original_url") or "",
+                        raw={**raw, "site_id": raw.get("site_id") or site_id, "business_id": raw.get("business_id") or business_id, "policy_level": raw.get("policy_level") or row.get("policy_level")},
+                    )
+                    outcome = self._process_candidate(run_id, "shanghai_policy_platform", task, candidate, None, False, adapter, None, False, seen_titles, False, kms_titles.get(task["base_id"]), kms_titles)
+                    if outcome == "failed":
+                        # _process_candidate 已更新原失败台账（唯一来源键）；保持活动状态。
+                        pass
+                    else:
+                        self.db.resolve_classification_failure(row["policy_crawler_classification_failure_id"], "重新抓取成功，已转入待入库" if outcome == "succeeded" else "重新抓取后跳过：标题重复或不符合入库分类")
+                    counts["processed"] += 1
+                    counts[outcome] += 1
+                    self.db.update_run(run_id, **counts, current_item=source_item_id)
+                    self.events.emit(run_id, "progress", candidate.project_name, **counts)
+            status = "stopped" if stop_flag.is_set() else "completed"
+            message = "重新抓取已停止" if status == "stopped" else "重新抓取完成"
+            self.db.update_run(run_id, status=status, finished_at=datetime.now(), message=message, **counts)
+            self.events.emit(run_id, "complete", message, status=status, **counts)
+        except Exception as exc:
+            logger.exception("classification retry run_id=%s failed", run_id)
             self.db.update_run(run_id, status="failed", finished_at=datetime.now(), message=_error_summary(exc), **counts)
             self.events.emit(run_id, "error", _error_summary(exc), **counts)
         finally:
@@ -315,17 +492,28 @@ class RunManager:
             push_run_id = uuid.uuid4().hex
             self._active_run = push_run_id
             self._stop_flags[push_run_id] = threading.Event()
+        claimed_statuses: dict[str, str] = {}
         try:
+            claimed_statuses = self.db.claim_articles_for_push(article_ids)
             self.db.create_run(push_run_id, "manual-push", ["push-selected"], False)
         except Exception:
             logger.exception("run_id=%s auto_sync: create push run failed", crawl_run_id)
+            if claimed_statuses:
+                self.db.release_articles_from_processing(claimed_statuses)
             self._release(push_run_id)
             return None
-        threading.Thread(target=self._execute_push_ids, args=(push_run_id, article_ids, False), daemon=True, name=f"push-{push_run_id[:8]}").start()
+        try:
+            threading.Thread(target=self._execute_push_ids, args=(push_run_id, article_ids, False, claimed_statuses), daemon=True, name=f"push-{push_run_id[:8]}").start()
+        except Exception:
+            logger.exception("run_id=%s auto_sync: start push thread failed", crawl_run_id)
+            self.db.release_articles_from_processing(claimed_statuses)
+            self.db.update_run(push_run_id, status="failed", finished_at=datetime.now(), message="入库线程启动失败；记录已解除占用")
+            self._release(push_run_id)
+            return None
         logger.info("run_id=%s auto_sync: push run %s started with %d articles", crawl_run_id, push_run_id, len(article_ids))
         return push_run_id
 
-    def _process_candidate(self, run_id: str, task_code: str, task: dict[str, Any], candidate, existing, dry_run: bool, adapter, kms: KmsClient | None, push_kms: bool = True, seen_titles: set[tuple[str, str]] | None = None, refresh_existing: bool = False, kms_titles: set[str] | None = None) -> str:
+    def _process_candidate(self, run_id: str, task_code: str, task: dict[str, Any], candidate, existing, dry_run: bool, adapter, kms: KmsClient | None, push_kms: bool = True, seen_titles: set[tuple[str, str]] | None = None, refresh_existing: bool = False, kms_titles: set[str] | None = None, kms_titles_by_base: dict[str, set[str] | None] | None = None) -> str:
         started = time.monotonic()
         item_id = uuid.uuid4().hex
         self.db.create_run_item(
@@ -360,12 +548,51 @@ class RunManager:
                 logger.info("run_id=%s task_code=%s source_item_id=%s kms_document_id=%s base_id=%s result_code=%s", run_id, task_code, candidate.source_item_id, payload.id, payload.base_id, result.code)
                 return "succeeded" if result.success else "failed"
             article = adapter.fetch(candidate)
+            # URL 输入阶段候选名称是原始 URL；详情解析成功后改为真实标题，
+            # 使实时进度日志和批次明细都能直接展示正在处理的政策。
+            if article.title:
+                candidate.project_name = article.title
             try:
                 content = compose_document_content(article)
             except ValueError as exc:
                 # 原文只含媒体、脚本等被剔除内容时，不作为失败记录入库。
                 raise SourceEmptyError("政策正文清洗后为空") from exc
-            payload = self._payload(article, content, task["base_id"])
+            # 统一政策平台必须在正文清洗后由智能体决定政策类型和目标知识库。
+            resolved_task = task
+            if task.get("requires_classification"):
+                try:
+                    classification = PolicyClassifier(self.settings, adapter.client).classify(
+                        content, TARGET_BASE_ID, NON_DECLARE_BASE_ID,
+                    )
+                    base_id = classification.base_id
+                    self.events.emit(
+                        run_id, "log",
+                        f"智能体判断：applicable_type={classification.applicable_type}；policy_type={classification.policy_type}",
+                        task_code=task_code, source_item_id=candidate.source_item_id,
+                    )
+                except ClassificationSkipped as exc:
+                    self.events.emit(
+                        run_id, "log",
+                        f"智能体判断：applicable_type={exc.applicable_type or '未识别'}；policy_type={exc.policy_type or '未识别'}",
+                        task_code=task_code, source_item_id=candidate.source_item_id,
+                    )
+                    self.db.update_run_item(item_id, phase="classify", status="skipped", message=str(exc), duration_ms=int((time.monotonic() - started) * 1000), finished_at=datetime.now())
+                    return "skipped"
+                except ClassificationError as exc:
+                    message = f"智能体分类失败：{exc}"
+                    if not dry_run:
+                        self.db.save_classification_failure(article, candidate.raw, message)
+                    self.db.update_run_item(item_id, phase="classify", status="failed", message=message, error_detail=message, duration_ms=int((time.monotonic() - started) * 1000), finished_at=datetime.now())
+                    return "failed"
+                # siteId:businessId 为平台来源的全局稳定 ID。成功分类过的记录不能
+                # 因分类服务结果波动转入另一套知识库。
+                any_existing = self.db.find_existing_any_base(candidate.source_code, candidate.source_item_id)
+                if any_existing:
+                    self.db.update_run_item(item_id, policy_crawler_article_id=any_existing["policy_crawler_article_id"], phase="deduplicate", status="skipped", message="已按该平台来源抓取过，跳过", duration_ms=int((time.monotonic() - started) * 1000), finished_at=datetime.now())
+                    return "skipped"
+                resolved_task = {**task, "base_id": base_id}
+                kms_titles = (kms_titles_by_base or {}).get(base_id)
+            payload = self._payload(article, content, resolved_task["base_id"])
             if existing:
                 # 重新抓取仅比对本地已入库快照，绝不在此步骤调用 KMS。
                 article_id = existing["policy_crawler_article_id"]
@@ -384,9 +611,9 @@ class RunManager:
                 return "succeeded"
             # 标题去重：同批次内重复标题，或库中已存在同标题，直接跳过（不重复抓取入库）
             title = (article.title or "").strip()
-            title_key = (task["base_id"], title)
+            title_key = (resolved_task["base_id"], title)
             if title and seen_titles is not None:
-                if title_key in seen_titles or self.db.find_existing_by_title(title_key[1], task["base_id"]):
+                if title_key in seen_titles or self.db.find_existing_by_title(title_key[1], resolved_task["base_id"]):
                     seen_titles.add(title_key)
                     self.db.update_run_item(item_id, phase="deduplicate", status="skipped", message="标题重复（本批次或库中已存在），跳过", duration_ms=int((time.monotonic() - started) * 1000), finished_at=datetime.now())
                     logger.info("run_id=%s task_code=%s source_item_id=%s skipped, duplicate title", run_id, task_code, candidate.source_item_id)
@@ -492,21 +719,40 @@ class RunManager:
             self._release(run_id)
 
     def push_articles(self, article_ids: list[str], dry_run: bool) -> str:
+        article_ids = list(dict.fromkeys(article_ids))
         with self._guard:
             if self._active_run:
                 raise RunConflictError(self._active_run)
             run_id = uuid.uuid4().hex
             self._active_run = run_id
             self._stop_flags[run_id] = threading.Event()
+        claimed_statuses: dict[str, str] = {}
         try:
+            if not dry_run:
+                claimed_statuses = self.db.claim_articles_for_push(article_ids)
             self.db.create_run(run_id, "manual-push", ["push-selected"], dry_run)
         except Exception:
+            if claimed_statuses:
+                self.db.release_articles_from_processing(claimed_statuses)
+            try:
+                self.db.update_run(run_id, status="failed", finished_at=datetime.now(), message="入库线程启动失败；记录已解除占用")
+            except Exception:
+                logger.exception("push run_id=%s failed to mark thread start failure", run_id)
             self._release(run_id)
             raise
-        threading.Thread(target=self._execute_push_ids, args=(run_id, article_ids, dry_run), daemon=True, name=f"push-{run_id[:8]}").start()
+        try:
+            threading.Thread(target=self._execute_push_ids, args=(run_id, article_ids, dry_run, claimed_statuses), daemon=True, name=f"push-{run_id[:8]}").start()
+        except Exception:
+            if claimed_statuses:
+                self.db.release_articles_from_processing(claimed_statuses)
+            self._release(run_id)
+            raise
         return run_id
 
-    def _execute_push_ids(self, run_id: str, article_ids: list[str], dry_run: bool) -> None:
+    def _execute_push_ids(
+        self, run_id: str, article_ids: list[str], dry_run: bool,
+        claimed_statuses: dict[str, str] | None = None,
+    ) -> None:
         counts = {"total": 0, "processed": 0, "succeeded": 0, "skipped": 0, "failed": 0}
         stop_flag = self._stop_flags[run_id]
         self.db.update_run(run_id, status="running", started_at=datetime.now(), message="入库运行中")
@@ -549,6 +795,11 @@ class RunManager:
                     logger.info("run_id=%s task_code=push source_item_id=%s kms_document_id=%s base_id=%s result_code=%s", run_id, row["source_item_id"], row["kms_document_id"], row["base_id"], result.code)
                 except Exception as exc:
                     logger.exception("push run_id=%s article_id=%s failed", run_id, article_id)
+                    if claimed_statuses is not None:
+                        self.db.update_article_kms(
+                            article_id,
+                            KmsResult(success=False, code="exception", message=_error_summary(exc), attempts=0),
+                        )
                     self.db.update_run_item(item_id, status="failed", message=_error_summary(exc), error_detail=_error_summary(exc), finished_at=datetime.now())
                     outcome = "failed"
                 counts["processed"] += 1
@@ -568,6 +819,11 @@ class RunManager:
         finally:
             if kms:
                 kms.close()
+            if claimed_statuses:
+                try:
+                    self.db.release_articles_from_processing(claimed_statuses)
+                except Exception:
+                    logger.exception("push run_id=%s failed to release processing articles", run_id)
             self._release(run_id)
 
     def update_articles(self, article_ids: list[str], dry_run: bool) -> str:

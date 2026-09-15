@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import urljoin
 
@@ -20,7 +21,7 @@ class SuishenbanAdapter(CrawlerAdapter):
     def health_url(self) -> str:
         return urljoin(self.api_root, "callinterface/policyproject")
 
-    def discover(self) -> list[PolicyCandidate]:
+    def discover(self, on_progress: Callable[[str], None] | None = None) -> list[PolicyCandidate]:
         # 与网站「政策中心」页面同口径：申报期限=进行中+即将开始(applyState 1,2)。
         # 筛选由服务端完成（与手动访问看到的结果一致），本地不再做日期推算。
         body = {
@@ -36,6 +37,8 @@ class SuishenbanAdapter(CrawlerAdapter):
         }
         result, page, fetched = [], 0, 0
         while True:
+            if on_progress:
+                on_progress(f"正在发现：请求第 {page + 1} 页（当前累计 {len(result)} 条）")
             payload_body = {**body, "page": page, "size": 100}
             response = self.client.post(
                 urljoin(self.api_root, "policy_center/hqPolicy/projects"),
@@ -67,6 +70,8 @@ class SuishenbanAdapter(CrawlerAdapter):
                     raw=row,
                 ))
             fetched += len(rows)
+            if on_progress:
+                on_progress(f"发现进度：第 {page + 1} 页，本页 {len(rows)} 条，累计 {len(result)} 条")
             if not rows or fetched >= total:
                 return result
             page += 1

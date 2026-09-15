@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS `policy_crawler_article` (
   `base_id` varchar(100) NOT NULL COMMENT '目标知识库ID',
   `kms_payload_json` longtext NOT NULL COMMENT '已验证KMS请求快照',
   `crawl_status` varchar(32) NOT NULL DEFAULT 'success' COMMENT '抓取状态',
-  `kms_status` varchar(32) NOT NULL DEFAULT 'pending' COMMENT 'KMS状态',
+  `kms_status` varchar(32) NOT NULL DEFAULT 'pending' COMMENT 'KMS状态：pending/processing/success/failed',
   `content_update_status` varchar(32) NOT NULL DEFAULT 'not_needed' COMMENT '正文覆盖更新状态',
   `content_update_error` text COMMENT '正文覆盖更新错误摘要',
   `content_updated_at` datetime DEFAULT NULL COMMENT '正文覆盖更新时间',

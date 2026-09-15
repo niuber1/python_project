@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from urllib.parse import urljoin
 
 from .base import AdapterError, CrawlerAdapter, SourceEmptyError
@@ -15,9 +16,11 @@ class QifuyunAdapter(CrawlerAdapter):
     def health_url(self) -> str:
         return urljoin(self.api_root, "chatSNet/policy")
 
-    def discover(self) -> list[PolicyCandidate]:
+    def discover(self, on_progress: Callable[[str], None] | None = None) -> list[PolicyCandidate]:
         page, result = 1, []
         while True:
+            if on_progress:
+                on_progress(f"正在发现：请求第 {page} 页（当前累计 {len(result)} 条）")
             body = {
                 "pageNum": page, "pageSize": 100, "area": "上海市", "industryType": None,
                 "projectType": None, "informationSource": None, "applicationStatus": "申报中", "name": "",
@@ -39,6 +42,8 @@ class QifuyunAdapter(CrawlerAdapter):
                     raw=row,
                 ))
             total = int(payload.get("total") or len(result))
+            if on_progress:
+                on_progress(f"发现进度：第 {page} 页，本页 {len(rows)} 条，累计 {len(result)}/{total} 条")
             if not rows or len(result) >= total:
                 return result
             page += 1

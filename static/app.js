@@ -8,7 +8,10 @@ let articlePage = 1,
   articleSource = "",
   articlePolicyType = "",
   articleSyncStatus = "",
+  articlePolicyLevel = "",
+  articleCrawlStatus = "",
   articleTotal = 0,
+  classificationFailureTotal = 0,
   dataView = "pending",
   selectedArticles = new Set();
 let contentUpdateEnabled = false;
@@ -93,6 +96,7 @@ function taskLabel(type) {
       "manual-crawl": "手动抓取",
       "manual-push": "入库",
       "manual-url": "URL 抓取",
+      "classification-retry": "重新抓取分类失败",
     }[type] || type
   );
 }
@@ -290,17 +294,18 @@ async function testKmsAuth() {
 function viewQuery() {
   if (!contentUpdateEnabled)
     return dataView === "pending"
-      ? { status: "pending" }
+      ? { status: "pending_or_processing" }
       : articleSyncStatus
         ? { status: articleSyncStatus }
         : {};
-  if (dataView === "pending") return { status: "pending" };
+  if (dataView === "pending") return { status: "pending_or_processing" };
   if (dataView === "update") return { update_status: "pending" };
   if (dataView === "updateFailed") return { update_status: "failed" };
   return articleSyncStatus ? { status: articleSyncStatus } : {};
 }
 function updateActionControls() {
   const n = selectedArticles.size,
+    isReCrawl = articleCrawlStatus === "classification_failed",
     retryingFailed = dataView === "all",
     hasSelectableRows = [...document.querySelectorAll(".row-check:not(:disabled)")].length > 0,
     actionable = dataView !== "all" || n > 0,
@@ -308,16 +313,24 @@ function updateActionControls() {
   $("selectionHint").textContent = actionable
     ? n
       ? `已选择 ${n} 条记录`
-      : `请选择需要${isUpdate ? "更新正文" : "入库"}的记录`
+      : isReCrawl
+        ? "可勾选部分记录重新抓取，或点击“全部重新抓取”处理全部失败记录。"
+        : `请选择需要${isUpdate ? "更新正文" : "入库"}的记录`
     : retryingFailed
       ? "“全部记录”中仅同步失败的数据可勾选并再次入库。"
       : "请切换到待入库后执行操作。";
-  $("previewSelected").disabled = !actionable || n === 0;
+  $("previewSelected").disabled = !actionable || n === 0 || isReCrawl;
+  $("previewSelected").hidden = isReCrawl;
   $("executeSelected").disabled = !actionable || n === 0;
-  $("checkVisible").disabled = dataView === "all" ? !hasSelectableRows : !actionable;
+  $("checkVisible").textContent = isReCrawl ? "全部重新抓取" : "全选当前页";
+  $("checkVisible").disabled = isReCrawl
+    ? classificationFailureTotal === 0
+    : dataView === "all"
+      ? !hasSelectableRows
+      : !actionable;
   $("checkAll").disabled = !hasSelectableRows;
   $("previewSelected").textContent = isUpdate ? "预检匹配" : "预检入库";
-  $("executeSelected").textContent = isUpdate ? "覆盖更新正文" : "保存到知识库";
+  $("executeSelected").textContent = isReCrawl ? "重新抓取" : isUpdate ? "覆盖更新正文" : "保存到知识库";
 }
 function setDataView(next) {
   dataView = next;
@@ -335,6 +348,8 @@ async function loadArticles() {
     Object.entries(q).forEach(([k, v]) => params.set(k, v));
     if (articleSource) params.set("source_code", articleSource);
     if (articlePolicyType) params.set("policy_type", articlePolicyType);
+    if (articlePolicyLevel) params.set("policy_level", articlePolicyLevel);
+    if (articleCrawlStatus) params.set("crawl_status", articleCrawlStatus);
     const keyword = $("keyword").value.trim();
     if (keyword) params.set("keyword", keyword);
     const [v, c] = await Promise.all([
@@ -342,22 +357,28 @@ async function loadArticles() {
       json("/api/articles/counts"),
     ]);
     articleTotal = v.total;
+    classificationFailureTotal = c.classification_failed || 0;
     $("countPending").textContent = c.pending || 0;
     $("countUpdate").textContent = c.update_pending || 0;
     $("countUpdateFailed").textContent = c.update_failed || 0;
     $("articleStats").textContent =
       contentUpdateEnabled
-        ? `待入库 ${c.pending || 0} · 已同步 ${c.success || 0} · 待更新 ${c.update_pending || 0} · 更新失败 ${c.update_failed || 0} · 无法匹配 ${c.update_unmatched || 0}`
-        : `待入库 ${c.pending || 0} · 已同步 ${c.success || 0} · 同步失败 ${c.failed || 0}`;
+        ? `待入库 ${c.pending || 0} · 入库中 ${c.processing || 0} · 已同步 ${c.success || 0} · 抓取失败 ${c.classification_failed || 0} · 待更新 ${c.update_pending || 0} · 更新失败 ${c.update_failed || 0} · 无法匹配 ${c.update_unmatched || 0}`
+        : `待入库 ${c.pending || 0} · 入库中 ${c.processing || 0} · 已同步 ${c.success || 0} · 同步失败 ${c.failed || 0} · 抓取失败 ${c.classification_failed || 0}`;
     $("articlesBody").innerHTML =
       v.items
         .map((a) => {
+          const isFailure = a.record_type === "classification_failure";
           const sync =
-            a.kms_status === "success"
+            isFailure
+              ? '<span class="muted">-</span>'
+              : a.kms_status === "success"
               ? '<span class="status success">已同步</span>'
               : a.kms_status === "failed"
                 ? `<span class="status failed" title="${esc(a.last_error || a.kms_result_code || "同步失败")}">同步失败</span>`
-                : '<span class="status pending">待入库</span>';
+                : a.kms_status === "processing"
+                  ? '<span class="status processing" title="正在保存到知识库，请勿重复操作">入库中</span>'
+                  : '<span class="status pending">待入库</span>';
           const update =
             a.content_update_status === "success"
               ? '<span class="status success">已更新</span>'
@@ -373,11 +394,15 @@ async function loadArticles() {
               a.apply_start && a.apply_end
                 ? `${String(a.apply_start).slice(5)} ~ ${String(a.apply_end).slice(5)}`
                 : fmt(a.apply_start) || fmt(a.apply_end) || "-";
-          const selectable = dataView !== "all" || a.kms_status === "failed";
-          return `<tr><td><input type="checkbox" class="row-check" value="${esc(a.policy_crawler_article_id)}"${selectedArticles.has(a.policy_crawler_article_id) ? " checked" : ""}${selectable ? "" : " disabled"}></td><td class="title" title="${esc(a.title)}">${esc(a.title)}</td><td>${a.source_code === "qifuyun" ? "企服云" : "随申办"}</td><td>${esc(a.policy_type_name || "其他")}</td><td>${esc(a.publish_date || "-")}</td><td>${esc(fmt(a.crawled_at))}</td><td>${esc(apply)}</td><td>${sync}</td><td data-content-update${contentUpdateEnabled ? "" : " hidden"}>${update}</td><td>${esc(fmt(a.pushed_at) || "-")}</td></tr>`;
+          const selectable = a.kms_status !== "processing" && (isFailure || dataView !== "all" || a.kms_status === "failed");
+          const rowId = a.record_id || a.policy_crawler_article_id;
+          if (!selectable) selectedArticles.delete(rowId);
+          const sourceName = a.source_code === "qifuyun" ? "企服云" : a.source_code === "shanghai_policy_platform" ? "上海市统一政策发布平台" : "随申办";
+          const crawl = isFailure ? `<span class="status failed" title="${esc(a.last_error || "智能体分类失败")}">分类失败</span>` : '<span class="muted">正常</span>';
+          return `<tr><td><input type="checkbox" class="row-check" value="${esc(rowId)}"${selectedArticles.has(rowId) ? " checked" : ""}${selectable ? "" : " disabled"}></td><td class="title" title="${esc(a.title)}">${esc(a.title)}</td><td>${sourceName}</td><td>${esc(a.policy_type_name || "其他")}</td><td>${esc(a.publish_date || "-")}</td><td>${esc(fmt(a.crawled_at))}</td><td>${esc(apply)}</td><td>${crawl}</td><td>${sync}</td><td data-content-update${contentUpdateEnabled ? "" : " hidden"}>${update}</td><td>${esc(fmt(a.pushed_at) || "-")}</td></tr>`;
         })
         .join("") ||
-      '<tr><td colspan="10" class="muted">暂无符合条件的数据</td></tr>';
+      '<tr><td colspan="11" class="muted">暂无符合条件的数据</td></tr>';
     const pages = Math.max(1, Math.ceil(v.total / articleSize));
     $("pageInfo").textContent = `共 ${v.total} 条`;
     $("pageNo").textContent = `${articlePage} / ${pages}`;
@@ -426,8 +451,17 @@ async function startCrawl(dryRun) {
 }
 async function processSelected(dryRun) {
   const ids = [...selectedArticles],
+    isReCrawl = articleCrawlStatus === "classification_failed",
     isUpdate = contentUpdateEnabled && (dataView === "update" || dataView === "updateFailed");
   if (!ids.length) return;
+  if (isReCrawl) {
+    if (dryRun || !confirm(`将重新抓取并分类 ${ids.length} 条失败记录。确认继续？`)) return;
+    try {
+      const v = await json("/api/articles/re-crawl", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ failure_ids: ids }) });
+      watch(v.run_id);
+    } catch (e) { alert(e.message); }
+    return;
+  }
   const action = isUpdate
     ? "覆盖更新 KMS 正文并重新处理"
     : "保存到 KMS 知识库并拆解";
@@ -448,6 +482,10 @@ async function processSelected(dryRun) {
         }),
       },
     );
+    if (!dryRun && !isUpdate) {
+      selectedArticles.clear();
+      await loadArticles();
+    }
     watch(v.run_id);
   } catch (e) {
     alert(e.message);
@@ -519,6 +557,10 @@ $("urlStop").onclick = async () => {
 $("previewSelected").onclick = () => processSelected(true);
 $("executeSelected").onclick = () => processSelected(false);
 $("checkVisible").onclick = () => {
+  if (articleCrawlStatus === "classification_failed") {
+    recrawlAllFailures();
+    return;
+  }
   document.querySelectorAll(".row-check:not(:disabled):not(:checked)").forEach((x) => {
     x.checked = true;
     selectedArticles.add(x.value);
@@ -526,6 +568,22 @@ $("checkVisible").onclick = () => {
   $("checkAll").checked = true;
   updateActionControls();
 };
+
+async function recrawlAllFailures() {
+  if (!classificationFailureTotal) return;
+  if (!confirm(`将重新抓取并分类全部 ${classificationFailureTotal} 条失败记录。确认继续？`)) return;
+  const button = $("checkVisible");
+  button.disabled = true;
+  button.textContent = "任务创建中…";
+  try {
+    const v = await json("/api/articles/re-crawl-all", { method: "POST" });
+    selectedArticles.clear();
+    watch(v.run_id);
+  } catch (e) {
+    alert(e.message);
+    updateActionControls();
+  }
+}
 $("articlesBody").addEventListener("change", (e) => {
   const box = e.target;
   if (!box.classList.contains("row-check")) return;
@@ -552,6 +610,7 @@ $("sourceFilter").onclick = (e) => {
   if (!button) return;
   articleSource = button.dataset.source || "";
   articlePage = 1;
+  selectedArticles.clear();
   [...$("sourceFilter").children].forEach((x) =>
     x.classList.toggle("on", x === button),
   );
@@ -564,6 +623,22 @@ $("typeFilter").onclick = (e) => {
   articlePage = 1;
   [...$("typeFilter").children].forEach((x) => x.classList.toggle("on", x === button));
   loadArticles();
+};
+$("levelFilter").onclick = (e) => {
+  const button = e.target.closest(".opt");
+  if (!button) return;
+  articlePolicyLevel = button.dataset.policyLevel || "";
+  articlePage = 1; selectedArticles.clear();
+  [...$("levelFilter").children].forEach((x) => x.classList.toggle("on", x === button));
+  loadArticles();
+};
+$("crawlStatusFilter").onclick = (e) => {
+  const button = e.target.closest(".opt");
+  if (!button) return;
+  articleCrawlStatus = button.dataset.crawlStatus || "";
+  if (articleCrawlStatus && dataView !== "all") setDataView("all");
+  else { articlePage = 1; selectedArticles.clear(); loadArticles(); }
+  [...$("crawlStatusFilter").children].forEach((x) => x.classList.toggle("on", x === button));
 };
 $("syncStatusFilter").onclick = (e) => {
   const button = e.target.closest(".opt");

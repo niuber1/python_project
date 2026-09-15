@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -22,13 +23,13 @@ from .engine import RunConflictError, RunManager
 from .events import EventStore
 from . import kms_kb
 from .logging_config import configure_logging
-from .models import KmsAuthConfigRequest, PushArticlesRequest, ScheduleConfigRequest, StartRunRequest, UpdateArticlesRequest, UrlRunRequest
+from .models import KmsAuthConfigRequest, PushArticlesRequest, ReCrawlRequest, ScheduleConfigRequest, StartRunRequest, UpdateArticlesRequest, UrlRunRequest
 
 
 settings = get_settings()
 configure_logging(settings)
 database = Database(settings)
-events = EventStore()
+events = EventStore(database)
 manager = RunManager(settings, database, events)
 scheduler: BackgroundScheduler | None = None
 logger = logging.getLogger(__name__)
@@ -39,6 +40,18 @@ def scheduled_run(task_codes: list[str]) -> None:
         manager.start(task_codes, dry_run=False, trigger_type="schedule", phase="crawl")
     except RunConflictError:
         return
+
+
+def close_stale_runs() -> None:
+    """只收束已没有内存活动线程的陈旧批次，避免误停正在执行的任务。"""
+    if manager.active_run:
+        return
+    try:
+        affected = database.finish_stale_runs(settings.run_stale_minutes)
+        if affected:
+            logger.warning("已自动收束 %s 个超过 %s 分钟未更新的任务", affected, settings.run_stale_minutes)
+    except Exception:
+        logger.exception("陈旧任务自动收束失败")
 
 
 def default_schedule_config() -> dict[str, Any]:
@@ -78,8 +91,18 @@ async def lifespan(_: FastAPI):
     global scheduler
     if settings.bind_host not in {"127.0.0.1", "localhost", "::1"} and not (settings.admin_user and settings.admin_password):
         raise RuntimeError("非本机监听必须配置 CRAWLER_ADMIN_USER 和 CRAWLER_ADMIN_PASSWORD")
+    interrupted = database.finish_interrupted_runs()
+    if interrupted:
+        logger.warning("服务启动时已结束 %s 个因重启中断的旧任务", interrupted)
     scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
     apply_schedule(stored_schedule_config())
+    scheduler.add_job(
+        close_stale_runs,
+        trigger=IntervalTrigger(minutes=5, timezone="Asia/Shanghai"),
+        id="stale-policy-crawler-run-reaper",
+        coalesce=True,
+        max_instances=1,
+    )
     scheduler.start()
     yield
     scheduler.shutdown(wait=False)
@@ -198,6 +221,8 @@ def list_articles(
     keyword: str | None = None,
     update_status: str | None = None,
     policy_type: str | None = None,
+    policy_level: str | None = None,
+    crawl_status: str | None = None,
 ):
     return database.list_articles(
         page, size,
@@ -206,6 +231,8 @@ def list_articles(
         keyword=(keyword or "").strip() or None,
         update_status=(update_status or "").strip() or None,
         policy_type=(policy_type or "").strip() or None,
+        policy_level=(policy_level or "").strip() or None,
+        crawl_status=(crawl_status or "").strip() or None,
     )
 
 
@@ -223,7 +250,7 @@ def article_counts():
         if settings.enable_content_update:
             data.update({f"update_{key}": value for key, value in database.content_update_counts().items()})
     except Exception:
-        data = {"pending": 0, "success": 0, "failed": 0, "update_pending": 0, "update_failed": 0, "update_unmatched": 0, "update_success": 0, "update_not_needed": 0}
+        data = {"pending": 0, "processing": 0, "success": 0, "failed": 0, "classification_failed": 0, "update_pending": 0, "update_failed": 0, "update_unmatched": 0, "update_success": 0, "update_not_needed": 0}
     _counts_cache.update(at=now, data=data)
     return data
 
@@ -248,6 +275,8 @@ def push_articles(body: PushArticlesRequest):
     if not body.dry_run and not body.confirm_write:
         raise HTTPException(400, "正式入库必须设置 confirm_write=true")
     ids = list(dict.fromkeys(body.article_ids))
+    if database.active_classification_failures(ids):
+        raise HTTPException(400, "抓取失败记录尚未完成智能体分类，不能保存到知识库")
     rows = database.get_articles_by_ids(ids)
     found = {row["policy_crawler_article_id"] for row in rows}
     missing = sorted(set(ids) - found)
@@ -257,7 +286,37 @@ def push_articles(body: PushArticlesRequest):
         run_id = manager.push_articles(ids, body.dry_run)
     except RunConflictError as exc:
         raise HTTPException(409, {"message": "已有任务运行中", "active_run": str(exc)}) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    _counts_cache.update(at=0.0, data=None)
     return {"run_id": run_id, "status": "queued"}
+
+
+@app.post("/api/articles/re-crawl", status_code=202)
+def recrawl_articles(body: ReCrawlRequest):
+    failure_ids = list(dict.fromkeys(body.failure_ids))
+    rows = database.active_classification_failures(failure_ids)
+    found = {row["policy_crawler_classification_failure_id"] for row in rows}
+    missing = sorted(set(failure_ids) - found)
+    if missing:
+        raise HTTPException(400, f"以下抓取失败记录不存在或已处理: {', '.join(missing[:5])}")
+    try:
+        run_id = manager.recrawl_classification_failures(failure_ids)
+    except RunConflictError as exc:
+        raise HTTPException(409, {"message": "已有任务运行中", "active_run": str(exc)}) from exc
+    return {"run_id": run_id, "status": "queued"}
+
+
+@app.post("/api/articles/re-crawl-all", status_code=202)
+def recrawl_all_articles():
+    total = database.active_classification_failure_count()
+    if total == 0:
+        raise HTTPException(status_code=400, detail="当前没有待重新抓取的失败记录")
+    try:
+        run_id = manager.recrawl_classification_failures(None)
+    except RunConflictError as exc:
+        raise HTTPException(409, {"message": "已有任务运行中", "active_run": str(exc)}) from exc
+    return {"run_id": run_id, "status": "queued", "total": total}
 
 
 @app.post("/api/articles/update", status_code=202)
@@ -336,6 +395,11 @@ async def run_events(request: Request, run_id: str):
 
     async def stream():
         cursor = last_id
+        if cursor == 0:
+            history = await asyncio.to_thread(events.recent, run_id)
+            for event in history:
+                cursor = event["id"]
+                yield events.sse(event)
         while not await request.is_disconnected():
             batch = await asyncio.to_thread(events.wait_after, run_id, cursor, 15)
             if not batch:
@@ -372,6 +436,7 @@ def health():
     for name, url in {
         "suishenban": "https://zwdt.sh.gov.cn/qykj/shell_oc_policy_zq/policy/index",
         "qifuyun": "https://shpolicy.ssme.sh.gov.cn/knowledge/",
+        "shanghai_policy_platform": "https://www.shanghai.gov.cn/zhengce/more?level=city",
     }.items():
         try:
             response = httpx.get(url, timeout=10, follow_redirects=True)

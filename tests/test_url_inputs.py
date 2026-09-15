@@ -37,3 +37,9 @@ def test_candidate_from_url_recognizes_shanghai_government_as_suishenban():
     assert candidate.source_code == "suishenban"
     assert candidate.source_item_id == "shanghai-gwk:0084i20150609-tpkupq5lukk0riylhb"
     assert candidate.raw["url_reference"] == "shanghai_government"
+
+
+def test_candidate_from_url_recognizes_shanghai_policy_platform_detail():
+    candidate = candidate_from_url("https://www.shanghai.gov.cn/zhengce/detail?siteId=0001&businessId=abc")
+    assert candidate.source_code == "shanghai_policy_platform"
+    assert candidate.source_item_id == "0001:abc"

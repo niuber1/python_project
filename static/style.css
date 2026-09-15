@@ -286,12 +286,28 @@ pre {
 .filters {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px 10px;
   flex-wrap: wrap;
 }
 .group {
   display: flex;
-  gap: 5px;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+/* 数据处理的筛选项较多：采用紧凑字号和间距，优先保持每组按钮完整。 */
+#panelArticles .filters .opt {
+  padding: 6px 10px;
+  font-size: 13px;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+#panelArticles .filters .group {
+  gap: 4px;
+}
+#panelArticles .filters input[type="search"] {
+  width: 210px;
+  min-height: 34px;
+  font-size: 13px;
 }
 .filters input[type="search"] {
   width: 240px;
@@ -378,6 +394,10 @@ td.title {
 .status.pending {
   background: #423615;
   color: var(--warning);
+}
+.status.processing {
+  background: #173454;
+  color: #7fc8ff;
 }
 .status.failed {
   background: #461d28;

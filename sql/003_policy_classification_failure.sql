@@ -1,0 +1,23 @@
+CREATE TABLE IF NOT EXISTS `policy_crawler_classification_failure` (
+  `policy_crawler_classification_failure_id` varchar(36) NOT NULL COMMENT '主键',
+  `source_code` varchar(50) NOT NULL,
+  `source_item_id` varchar(128) NOT NULL,
+  `source_name` varchar(100) NOT NULL,
+  `title` varchar(1000) NOT NULL,
+  `project_name` varchar(1000) NOT NULL,
+  `policy_level` varchar(100) DEFAULT NULL,
+  `publish_dept` varchar(500) DEFAULT NULL,
+  `document_no` varchar(200) DEFAULT NULL,
+  `publish_date` date DEFAULT NULL,
+  `original_url` varchar(2000) NOT NULL,
+  `candidate_json` longtext NOT NULL,
+  `last_error` text NOT NULL,
+  `retry_count` int NOT NULL DEFAULT 1,
+  `failure_status` varchar(32) NOT NULL DEFAULT 'active',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `resolved_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`policy_crawler_classification_failure_id`),
+  UNIQUE KEY `uk_policy_crawler_classification_failure_source` (`source_code`,`source_item_id`),
+  KEY `idx_policy_crawler_classification_failure_status` (`failure_status`,`updated_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='政策智能体分类失败台账';

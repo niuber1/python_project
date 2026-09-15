@@ -167,6 +167,10 @@ class PushArticlesRequest(BaseModel):
     confirm_write: bool = False
 
 
+class ReCrawlRequest(BaseModel):
+    failure_ids: list[str] = Field(min_length=1)
+
+
 class UpdateArticlesRequest(PushArticlesRequest):
     """覆盖更新 KMS 正文的已抓取文章请求。"""
 

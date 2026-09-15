@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 
 import httpx
 
@@ -22,7 +23,7 @@ class CrawlerAdapter(ABC):
         self.client = client
 
     @abstractmethod
-    def discover(self) -> list[PolicyCandidate]: ...
+    def discover(self, on_progress: Callable[[str], None] | None = None) -> list[PolicyCandidate]: ...
 
     @abstractmethod
     def fetch(self, candidate: PolicyCandidate) -> PolicyArticle: ...
